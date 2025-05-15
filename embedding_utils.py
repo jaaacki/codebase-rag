@@ -60,9 +60,37 @@ def get_available_models(provider="groq"):
         client = create_llm_client(provider)
         
         if provider.lower() == "groq":
-            # GROQ models
-            response = client.models.list()
-            return [model.id for model in response.data]
+            # GROQ models - try to get actual models from API
+            try:
+                response = client.models.list()
+                models = [model.id for model in response.data]
+                
+                # Filter models to keep only the real LLM models (not TTS, etc.)
+                llm_models = [
+                    model for model in models 
+                    if "whisper" not in model.lower() and 
+                       "tts" not in model.lower() and
+                       model.startswith(("llama", "meta-llama", "mistral", "gemma", "qwen"))
+                ]
+                
+                # If we don't find any LLM models, use all models
+                if not llm_models:
+                    llm_models = models
+                
+                # Sort models: larger models first, then by name
+                sorted_models = sorted(llm_models, key=lambda x: (
+                    # Put the larger models (70b) first
+                    0 if "70b" in x.lower() else 1,
+                    # Then by name
+                    x
+                ))
+                
+                return sorted_models
+                
+            except Exception as e:
+                st.warning(f"Error getting GROQ models: {str(e)}")
+                # Fallback GROQ models - updated based on actual API response
+                return ["llama-3.3-70b-versatile", "llama3-70b-8192", "llama-3.1-8b-instant"]
         elif provider.lower() == "openai":
             # OpenAI models
             response = client.models.list()
@@ -91,7 +119,7 @@ def get_available_models(provider="groq"):
         st.warning(f"Error fetching models for {provider}: {str(e)}")
         # Return default models if we can't fetch
         if provider.lower() == "groq":
-            return ["llama-3.1-8b-instant", "llama-3.1-70b-versatile"]
+            return ["llama-3.3-70b-versatile", "llama3-70b-8192", "llama-3.1-8b-instant"]
         elif provider.lower() == "openai":
             return ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo"]
         elif provider.lower() == "anthropic":
@@ -100,17 +128,18 @@ def get_available_models(provider="groq"):
 
 def get_llm_model(provider="groq", selected_model=None):
     """Get appropriate model name based on provider"""
-    # If a selected model is provided and not empty, use it
-    if selected_model and selected_model.strip():
-        return selected_model
-        
-    # Otherwise, get default from secrets or use hardcoded default
+    # For GROQ, use a model that actually exists in the API
     if provider.lower() == "groq":
-        return st.secrets.get("GROQ_MODEL", "llama-3.1-8b-instant")
+        # If a selected model is provided and valid, use that
+        if selected_model and selected_model.strip():
+            return selected_model
+        else:
+            # Use a more powerful model by default (based on actual API response)
+            return "llama-3.3-70b-versatile"
     elif provider.lower() == "openai":
-        return st.secrets.get("OPENAI_MODEL", "gpt-3.5-turbo")
+        return selected_model or st.secrets.get("OPENAI_MODEL", "gpt-3.5-turbo")
     elif provider.lower() == "anthropic":
-        return st.secrets.get("ANTHROPIC_MODEL", "claude-3-opus-20240229")
+        return selected_model or st.secrets.get("ANTHROPIC_MODEL", "claude-3-opus-20240229")
     else:
         raise ValueError(f"Unsupported LLM provider: {provider}")
 
@@ -146,9 +175,6 @@ def perform_rag(query, client, pinecone_index, selected_namespace, llm_provider=
     try:
         # Get LLM provider from session state or secrets
         llm_provider = llm_provider or st.session_state.get("llm_provider", st.secrets.get("LLM_PROVIDER", "groq"))
-        
-        # Use the selected_model that was passed to this function
-        # This ensures the user's model selection is respected
         
         # Get embeddings dynamically based on configuration
         raw_query_embedding = get_embeddings(query)
@@ -207,18 +233,27 @@ def perform_rag(query, client, pinecone_index, selected_namespace, llm_provider=
         # Create the appropriate client
         client = create_llm_client(llm_provider)
         
-        # Get the model, prioritizing the passed selected_model
-        model = selected_model if selected_model else get_llm_model(llm_provider)
+        # CRITICAL FIX: For GROQ, use a model that's actually in the API
+        if llm_provider.lower() == "groq":
+            # Check if selected model is valid
+            if selected_model and selected_model.strip():
+                model = selected_model
+            else:
+                # Use a more powerful model by default (based on actual API response)
+                model = "llama-3.3-70b-versatile"
+        else:
+            model = selected_model or get_llm_model(llm_provider)
         
         # Handle different provider APIs
         if llm_provider.lower() in ["groq", "openai"]:
             llm_response = client.chat.completions.create(
-                model=model,
+                model=model,  # Use the model we just determined
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": augmented_query}
                 ]
             )
+            
             return llm_response.choices[0].message.content
             
         elif llm_provider.lower() == "anthropic":

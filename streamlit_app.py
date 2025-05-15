@@ -81,10 +81,6 @@ def main():
     if "llm_provider" not in st.session_state:
         st.session_state.llm_provider = st.secrets.get("LLM_PROVIDER", "groq")
     
-    # Initialize session state for selected model
-    if "selected_model" not in st.session_state:
-        st.session_state.selected_model = None
-    
     # Initialize Pinecone and get list of namespaces
     pinecone_api_key = st.secrets["PINECONE_API_KEY"]
     pinecone_index_name = st.secrets.get("PINECONE_INDEX_NAME", "codebase-rag")
@@ -156,20 +152,32 @@ def main():
     # Update session state when provider changes
     if selected_provider != st.session_state.llm_provider:
         st.session_state.llm_provider = selected_provider
-        st.session_state.selected_model = None  # Reset selected model when provider changes
+        # Reset selected model when provider changes
+        st.session_state.selected_model = None
         st.rerun()  # Rerun to update available models
     
     # Fetch available models for the selected provider
-    st.sidebar.text("Loading models...")
     available_models = get_available_models(st.session_state.llm_provider)
     
     # Model selection dropdown
-    default_model = get_llm_model(st.session_state.llm_provider)
+    # Set default model and index
+    if st.session_state.llm_provider == "groq":
+        # For GROQ, prefer a more powerful model
+        preferred_groq_models = ["llama-3.3-70b-versatile", "llama3-70b-8192"]
+        default_model = next((m for m in preferred_groq_models if m in available_models), available_models[0])
+    else:
+        default_model = get_llm_model(st.session_state.llm_provider)
+    
+    # Find the index of the default model in available models
     default_index = 0
     if default_model in available_models:
         default_index = available_models.index(default_model)
     
-    # Modified: Direct selection without conditional update
+    # If there's already a selected model in session state, use it
+    if "selected_model" in st.session_state and st.session_state.selected_model in available_models:
+        default_index = available_models.index(st.session_state.selected_model)
+    
+    # Display the model selection dropdown
     selected_model = st.sidebar.selectbox(
         "Select Model",
         options=available_models,
