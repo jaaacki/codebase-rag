@@ -19,6 +19,10 @@ def add_repository(repo_url, namespace, pc, pinecone_index, pinecone_index_name)
         
         if success:
             st.success(message)
+            # Store the repository URL in session state
+            if "repository_urls" not in st.session_state:
+                st.session_state.repository_urls = {}
+            st.session_state.repository_urls[namespace] = repo_url
             # Set flag in session state to trigger refresh on next run
             st.session_state.repository_added = True
             st.session_state.refresh_required = True
@@ -45,6 +49,9 @@ def delete_repository(namespace_to_delete, pinecone_index):
             # Clear session state if the deleted namespace was selected
             if "selected_namespace" in st.session_state and st.session_state.selected_namespace == namespace_to_delete:
                 del st.session_state.selected_namespace
+            # Remove the URL from repository_urls if it exists
+            if "repository_urls" in st.session_state and namespace_to_delete in st.session_state.repository_urls:
+                del st.session_state.repository_urls[namespace_to_delete]
             # Add a small delay to ensure UI updates before refresh
             time.sleep(1)
             st.rerun()
@@ -52,6 +59,52 @@ def delete_repository(namespace_to_delete, pinecone_index):
             st.error(message)
     
     return success, message
+
+def reindex_repository(namespace, repo_url, pc, pinecone_index, pinecone_index_name):
+    """Function to handle repository reindexing"""
+    try:
+        # First delete the existing namespace
+        with st.spinner(f"Deleting existing data for '{namespace}'..."):
+            success, delete_message = delete_namespace(pinecone_index, namespace)
+            
+            if not success:
+                st.error(f"Error deleting namespace: {delete_message}")
+                return False, delete_message
+            
+            # Small delay to ensure deletion completes
+            time.sleep(2)
+        
+        # Then add the repository with the same namespace
+        with st.spinner(f"Reindexing repository '{namespace}'... This may take a while."):
+            success, add_message = index_github_repo(
+                repo_url=repo_url, 
+                namespace=namespace, 
+                pinecone_client=pc,
+                pinecone_index=pinecone_index,
+                index_name=pinecone_index_name
+            )
+            
+            if success:
+                st.success(f"Successfully reindexed repository '{namespace}'")
+                # Store the repository URL in session state
+                if "repository_urls" not in st.session_state:
+                    st.session_state.repository_urls = {}
+                st.session_state.repository_urls[namespace] = repo_url
+                # Set flag in session state to trigger refresh on next run
+                st.session_state.repository_added = True
+                st.session_state.refresh_required = True
+                st.session_state.refresh_message = f"Repository '{namespace}' has been successfully reindexed."
+                # Add a small delay to ensure UI updates before refresh
+                time.sleep(1)
+                st.rerun()
+                return True, add_message
+            else:
+                st.error(f"Error reindexing repository: {add_message}")
+                return False, add_message
+    except Exception as e:
+        error_msg = f"Error during reindexing: {str(e)}"
+        st.error(error_msg)
+        return False, error_msg
 
 def main():
     st.title("Codebase RAG")
@@ -68,6 +121,14 @@ def main():
     
     if "repository_deleted" not in st.session_state:
         st.session_state.repository_deleted = False
+    
+    # Initialize session state for reindex modal
+    if "show_reindex_modal" not in st.session_state:
+        st.session_state.show_reindex_modal = False
+        
+    # Initialize session state for repository URLs
+    if "repository_urls" not in st.session_state:
+        st.session_state.repository_urls = {}
     
     # Check if we need to display a refresh notification
     if st.session_state.refresh_required:
@@ -273,12 +334,55 @@ def main():
             
         return
     
-    # Update sidebar selection to use session state
-    selected_namespace = st.sidebar.selectbox(
-        "Select Repository Namespace",
-        options=namespace_list,
-        key="selected_namespace"
-    )
+    # Repository selector with aligned reindex button
+    st.sidebar.subheader("Repository")
+    cols = st.sidebar.columns([0.85, 0.15])  # Adjust for better alignment
+    
+    with cols[0]:
+        selected_namespace = st.selectbox(
+            "Select Repository Namespace",
+            options=namespace_list,
+            key="selected_namespace",
+            label_visibility="collapsed"  # Hide duplicate label
+        )
+    
+    with cols[1]:
+        reindex_button = st.button("🔄", help="Reindex this repository with the latest code")
+        if reindex_button:
+            st.session_state.show_reindex_modal = True
+    
+    # Show reindex modal if button was clicked
+    if st.session_state.show_reindex_modal:
+        with st.sidebar.expander("Reindex Repository", expanded=True):
+            st.warning("⚠️ This will delete and reindex the selected repository namespace.")
+            
+            # Get stored URL if available
+            default_url = st.session_state.repository_urls.get(selected_namespace, "")
+            
+            repo_url = st.text_input(
+                "GitHub Repository URL", 
+                value=default_url,
+                placeholder="https://github.com/username/repository",
+                help="Enter the GitHub URL of the repository to reindex with latest code"
+            )
+            
+            confirm = st.checkbox("I understand this will replace the existing data")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("Confirm") and confirm and repo_url:
+                    # Call the reindex function
+                    success, message = reindex_repository(
+                        selected_namespace, repo_url, pc, pinecone_index, pinecone_index_name
+                    )
+                    if success:
+                        # Reset the modal state
+                        st.session_state.show_reindex_modal = False
+            with col2:
+                if st.button("Cancel"):
+                    # Reset the modal state
+                    st.session_state.show_reindex_modal = False
+                    st.rerun()
     
     st.caption(f"Currently browsing: {selected_namespace} | Using: {st.session_state.llm_provider.upper()} ({st.session_state.selected_model})")
     
