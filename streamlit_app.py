@@ -1,4 +1,4 @@
-# streamlit_app.py (with fixes for identified issues)
+# streamlit_app.py (with fixed export functionality)
 import streamlit as st
 import time
 import os
@@ -239,25 +239,30 @@ def show_repository_form(pc, pinecone_index, pinecone_index_name, repo_storage):
             add_repository(repo_url, namespace, pc, pinecone_index, pinecone_index_name, repo_storage)
 
 def show_export_modal(message_id):
-    """Show a modal to export message content"""
-    # Get the message by ID for filename suggestion
-    message_content = ""
-    if 0 <= message_id < len(st.session_state.messages):
-        message = st.session_state.messages[message_id]
-        message_content = message["content"]
-        
-        # Extract a potential filename from content (first few words)
-        default_filename = message_content.split()[:3]
-        default_filename = "_".join(default_filename)[:20].lower()
-        
-        # Clean the suggested filename
-        import re
-        default_filename = re.sub(r'[<>:"/\\|?*]', '', default_filename)
-    else:
-        default_filename = "chat_export"
+    """Show a modal for exporting message content"""
+    # Create a container in the main area for export functionality
+    export_container = st.container()
     
-    # Set up message export modal
-    with st.sidebar.expander("Export Message", expanded=True):
+    with export_container:
+        st.subheader("Export Message")
+        
+        # Get the message by ID for filename suggestion
+        message_content = ""
+        if 0 <= message_id < len(st.session_state.messages):
+            message = st.session_state.messages[message_id]
+            message_content = message["content"]
+            
+            # Extract a potential filename from content (first few words)
+            default_filename = message_content.split()[:3]
+            default_filename = "_".join(default_filename)[:20].lower()
+            
+            # Clean the suggested filename
+            import re
+            default_filename = re.sub(r'[<>:"/\\|?*]', '', default_filename)
+        else:
+            default_filename = "chat_export"
+        
+        # Set up export options
         st.write("Select export format:")
         
         export_type = st.radio(
@@ -265,36 +270,40 @@ def show_export_modal(message_id):
             ["Text", "Markdown"],
             key="export_format",
             horizontal=True,
-            label_visibility="collapsed"
         )
         
         # Add custom filename input
         custom_filename = st.text_input(
             "Filename (without extension)",
             value=default_filename,
+            key="custom_filename_input",
             help="Enter a custom filename. Extension will be added automatically."
         )
         
-        if st.button("Export"):
-            # Get the message by ID
-            if 0 <= message_id < len(st.session_state.messages):
-                message = st.session_state.messages[message_id]
-                
-                # Export the message with custom filename
-                success, result = export_chat_message(message, export_type, custom_filename)
-                
-                if success:
-                    st.success(f"Message exported successfully to: {result}")
+        # Use columns for buttons (works in main area)
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Export", key="export_message_btn", type="primary"):
+                # Get the message by ID
+                if 0 <= message_id < len(st.session_state.messages):
+                    message = st.session_state.messages[message_id]
+                    
+                    # Export the message with custom filename
+                    success, result = export_chat_message(message, export_type, custom_filename)
+                    
+                    if success:
+                        st.success(f"Message exported successfully to: {result}")
+                    else:
+                        st.error(result)
                 else:
-                    st.error(result)
-            else:
-                st.error("Message not found.")
+                    st.error("Message not found.")
                 
-        if st.button("Cancel"):
-            # Reset the modal state
-            st.session_state.show_export_modal = False
-            st.session_state.export_message_id = None
-            st.rerun()
+        with col2:
+            if st.button("Cancel", key="cancel_export_btn"):
+                # Reset the modal state
+                st.session_state.show_export_modal = False
+                st.session_state.export_message_id = None
+                st.rerun()
 
 def render_message_with_export(message, index):
     """Render a chat message with export button"""
@@ -327,8 +336,8 @@ def main():
     # Initialize all session state variables
     init_session_state()
     
-    # Initialize repository storage
-    repo_storage = RepositoryStorage()
+    # Initialize repository storage with data directory
+    repo_storage = RepositoryStorage("data/repo_data.json")
     
     # Load repository URLs from persistent storage to session state
     repo_storage.export_to_session_state()
@@ -433,12 +442,12 @@ def main():
     # Always update the session state with the selected model
     st.session_state.selected_model = selected_model
     
-    # Show export modal if enabled
-    if st.session_state.show_export_modal and st.session_state.export_message_id is not None:
-        show_export_modal(st.session_state.export_message_id)
-    
     # Navigation options
     app_page = st.sidebar.radio("Navigation", ["Chat with Codebase", "Manage Repositories"])
+    
+    # Show export modal if enabled (moved to main area)
+    if st.session_state.show_export_modal and st.session_state.export_message_id is not None:
+        show_export_modal(st.session_state.export_message_id)
     
     if app_page == "Manage Repositories":
         st.subheader("Manage GitHub Repositories")
@@ -488,7 +497,7 @@ def main():
             col1, col2 = st.columns([0.85, 0.15])
             
             with col2:
-                if st.button("🔄 Refresh"):
+                if st.button("🔄 Refresh", key="refresh_repos_btn"):
                     st.rerun()
             
             with repo_container:
@@ -501,26 +510,25 @@ def main():
         
         return
     
-    # Repository selector with aligned reindex button
+    # Repository selector without nested columns in sidebar
     st.sidebar.subheader("Repository")
-    cols = st.sidebar.columns([0.85, 0.15])  # Adjust for better alignment
     
-    with cols[0]:
-        selected_namespace = st.selectbox(
-            "Select Repository Namespace",
-            options=namespace_list,
-            key="selected_namespace",
-            label_visibility="collapsed"  # Hide duplicate label
-        )
+    # Repository selector (no columns)
+    selected_namespace = st.sidebar.selectbox(
+        "Select Repository",
+        options=namespace_list,
+        key="selected_namespace"
+    )
     
-    with cols[1]:
-        reindex_button = st.button("🔄", help="Reindex this repository with the latest code")
-        if reindex_button:
-            st.session_state.show_reindex_modal = True
+    # Separate reindex button
+    if st.sidebar.button("🔄 Reindex Repository", key="reindex_repo_btn", help="Reindex this repository with the latest code"):
+        st.session_state.show_reindex_modal = True
     
     # Show reindex modal if button was clicked
     if st.session_state.show_reindex_modal:
-        with st.sidebar.expander("Reindex Repository", expanded=True):
+        # Create a proper modal using a container in the main area instead of sidebar
+        with st.container():
+            st.subheader("Reindex Repository")
             st.warning("⚠️ This will delete and reindex the selected repository namespace.")
             
             # Get URL from storage first, then from session state as fallback
@@ -530,14 +538,16 @@ def main():
                 "GitHub Repository URL", 
                 value=default_url,
                 placeholder="https://github.com/username/repository",
+                key="reindex_repo_url",
                 help="Enter the GitHub URL of the repository to reindex with latest code"
             )
             
-            confirm = st.checkbox("I understand this will replace the existing data")
+            confirm = st.checkbox("I understand this will replace the existing data", key="confirm_reindex_checkbox")
             
+            # Use columns in the main area (where it's allowed)
             col1, col2 = st.columns(2)
             with col1:
-                if st.button("Confirm") and confirm and repo_url:
+                if st.button("Confirm", key="confirm_reindex_btn", type="primary") and confirm and repo_url:
                     # Call the reindex function
                     success, message = reindex_repository(
                         selected_namespace, repo_url, pc, pinecone_index, pinecone_index_name, repo_storage
@@ -546,7 +556,7 @@ def main():
                         # Reset the modal state
                         st.session_state.show_reindex_modal = False
             with col2:
-                if st.button("Cancel"):
+                if st.button("Cancel", key="cancel_reindex_btn"):
                     # Reset the modal state
                     st.session_state.show_reindex_modal = False
                     st.rerun()
@@ -591,18 +601,10 @@ def main():
         col1, col2 = st.columns([0.95, 0.05])
         with col2:
             st.write("")  # Add a bit of space
-            if st.button("💾", key=f"export_btn_{last_msg_idx}", help="Export this message"):
+            if st.button("💾", key=f"export_btn_new_{last_msg_idx}", help="Export this message"):
                 st.session_state.export_message_id = last_msg_idx
                 st.session_state.show_export_modal = True
                 st.rerun()
-
-# Also modify github_utils.py's index_github_repo function to improve progress UI
-def customize_progress_ui():
-    """
-    This function is just a note to also modify github_utils.py
-    to improve the progress display spacing if needed
-    """
-    pass
 
 if __name__ == "__main__":
     main()

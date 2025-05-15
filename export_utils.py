@@ -6,7 +6,7 @@ from openai import OpenAI
 
 def ensure_export_dir():
     """Ensure the export directory exists"""
-    export_dir = os.path.join(os.getcwd(), "export")
+    export_dir = os.path.join(os.getcwd(), "data/exports")
     os.makedirs(export_dir, exist_ok=True)
     return export_dir
 
@@ -29,7 +29,7 @@ def generate_filename(extension="txt", custom_name=None):
     # Default timestamp-based filename
     return f"chat_export_{timestamp}.{extension}"
 
-# Update the export_chat_message function to accept custom filename
+# Update the export_chat_message function to accept custom filename and give better feedback
 def export_chat_message(message, export_type="text", custom_filename=None):
     """Export a single chat message to a file"""
     try:
@@ -55,7 +55,9 @@ def export_chat_message(message, export_type="text", custom_filename=None):
         with open(export_path, 'w', encoding='utf-8') as f:
             f.write(content)
         
-        return True, export_path
+        # Make path relative for display
+        relative_path = os.path.join("data/exports", filename)
+        return True, relative_path
         
     except Exception as e:
         return False, f"Error exporting message: {str(e)}"

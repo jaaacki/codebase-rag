@@ -6,8 +6,10 @@ import streamlit as st
 class RepositoryStorage:
     """Class to handle persistent storage of repository URLs and namespaces"""
     
-    def __init__(self, storage_file="repo_data.json"):
+    def __init__(self, storage_file="data/repo_data.json"):
         """Initialize the storage with a file path"""
+        # Ensure the data directory exists
+        os.makedirs(os.path.dirname(storage_file), exist_ok=True)
         self.storage_file = storage_file
         self.data = self._load_data()
     
@@ -26,6 +28,9 @@ class RepositoryStorage:
     def _save_data(self):
         """Save data to the storage file"""
         try:
+            # Ensure directory exists
+            os.makedirs(os.path.dirname(self.storage_file), exist_ok=True)
+            
             with open(self.storage_file, 'w') as f:
                 json.dump(self.data, f)
             return True
