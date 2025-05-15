@@ -6,8 +6,46 @@ from pinecone_utils import initialize_pinecone, get_namespaces, delete_namespace
 from github_utils import index_github_repo
 from embedding_utils import perform_rag, create_llm_client, get_llm_model, get_available_models
 
+def init_session_state():
+    """Initialize all session state variables"""
+    # Form persistence
+    if "repo_url" not in st.session_state:
+        st.session_state.repo_url = ""
+    if "namespace" not in st.session_state:
+        st.session_state.namespace = ""
+    
+    # Repository URLs storage
+    if "repository_urls" not in st.session_state:
+        st.session_state.repository_urls = {}
+    
+    # Tracking refreshes and operations
+    if "refresh_required" not in st.session_state:
+        st.session_state.refresh_required = False
+    if "refresh_message" not in st.session_state:
+        st.session_state.refresh_message = ""
+    if "repository_added" not in st.session_state:
+        st.session_state.repository_added = False
+    if "repository_deleted" not in st.session_state:
+        st.session_state.repository_deleted = False
+    
+    # Reindex modal state
+    if "show_reindex_modal" not in st.session_state:
+        st.session_state.show_reindex_modal = False
+    
+    # LLM provider selection
+    if "llm_provider" not in st.session_state:
+        st.session_state.llm_provider = st.secrets.get("LLM_PROVIDER", "groq")
+    
+    # Index initialization tracking
+    if "index_initialization_complete" not in st.session_state:
+        st.session_state.index_initialization_complete = False
+    
+    # Chat messages
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+
 def add_repository(repo_url, namespace, pc, pinecone_index, pinecone_index_name):
-    """Separate function to handle repository addition"""
+    """Handle repository addition process"""
     with st.spinner("Indexing repository... This may take a while."):
         success, message = index_github_repo(
             repo_url=repo_url, 
@@ -36,7 +74,7 @@ def add_repository(repo_url, namespace, pc, pinecone_index, pinecone_index_name)
     return success, message
 
 def delete_repository(namespace_to_delete, pinecone_index):
-    """Separate function to handle repository deletion"""
+    """Handle repository deletion process"""
     with st.spinner(f"Deleting namespace '{namespace_to_delete}'..."):
         success, message = delete_namespace(pinecone_index, namespace_to_delete)
         
@@ -106,29 +144,44 @@ def reindex_repository(namespace, repo_url, pc, pinecone_index, pinecone_index_n
         st.error(error_msg)
         return False, error_msg
 
+def show_repository_form(pc, pinecone_index, pinecone_index_name):
+    """Display repository addition form with persistent values"""
+    with st.form("repository_form"):
+        repo_url = st.text_input(
+            "GitHub Repository URL", 
+            value=st.session_state.repo_url,
+            placeholder="https://github.com/username/repository",
+            help="The URL of the public GitHub repository you want to index."
+        )
+        
+        namespace = st.text_input(
+            "Namespace", 
+            value=st.session_state.namespace,
+            placeholder="my-repo",
+            help="A unique identifier for this repository in your Pinecone index."
+        )
+        
+        submit_button = st.form_submit_button("Index Repository")
+    
+    # Always update session state when form values change
+    st.session_state.repo_url = repo_url
+    st.session_state.namespace = namespace
+    
+    # Handle form submission
+    if submit_button:
+        if not repo_url:
+            st.error("Please enter a GitHub repository URL")
+        elif not namespace:
+            st.error("Please enter a namespace")
+        else:
+            add_repository(repo_url, namespace, pc, pinecone_index, pinecone_index_name)
+
 def main():
+    """Main application function"""
     st.title("Codebase RAG")
     
-    # Initialize session state variables for tracking refresh
-    if "refresh_required" not in st.session_state:
-        st.session_state.refresh_required = False
-    
-    if "refresh_message" not in st.session_state:
-        st.session_state.refresh_message = ""
-    
-    if "repository_added" not in st.session_state:
-        st.session_state.repository_added = False
-    
-    if "repository_deleted" not in st.session_state:
-        st.session_state.repository_deleted = False
-    
-    # Initialize session state for reindex modal
-    if "show_reindex_modal" not in st.session_state:
-        st.session_state.show_reindex_modal = False
-        
-    # Initialize session state for repository URLs
-    if "repository_urls" not in st.session_state:
-        st.session_state.repository_urls = {}
+    # Initialize all session state variables
+    init_session_state()
     
     # Check if we need to display a refresh notification
     if st.session_state.refresh_required:
@@ -138,14 +191,14 @@ def main():
         st.session_state.repository_added = False
         st.session_state.repository_deleted = False
     
-    # Initialize session state for LLM provider if it doesn't exist
-    if "llm_provider" not in st.session_state:
-        st.session_state.llm_provider = st.secrets.get("LLM_PROVIDER", "groq")
-    
-    # Initialize Pinecone and get list of namespaces
+    # Initialize Pinecone with silent mode after first initialization
     pinecone_api_key = st.secrets["PINECONE_API_KEY"]
     pinecone_index_name = st.secrets.get("PINECONE_INDEX_NAME", "codebase-rag")
+    silent_mode = st.session_state.index_initialization_complete
     pc, pinecone_index = initialize_pinecone(pinecone_api_key, pinecone_index_name)
+    
+    # Mark as initialized to prevent messages on subsequent reruns
+    st.session_state.index_initialization_complete = True
     
     # Get namespaces - no caching to ensure it's always fresh
     namespace_list = get_namespaces(pinecone_index)
@@ -158,30 +211,8 @@ def main():
         st.subheader("Add a GitHub Repository")
         st.markdown("Index a public GitHub repository to start using the RAG system.")
         
-        # Form to collect repository information
-        with st.form("repository_form"):
-            repo_url = st.text_input(
-                "GitHub Repository URL", 
-                placeholder="https://github.com/username/repository",
-                help="The URL of the public GitHub repository you want to index."
-            )
-            
-            namespace = st.text_input(
-                "Namespace", 
-                placeholder="my-repo",
-                help="A unique identifier for this repository in your Pinecone index."
-            )
-            
-            submit_button = st.form_submit_button("Index Repository")
-        
-        if submit_button:
-            if not repo_url:
-                st.error("Please enter a GitHub repository URL")
-            elif not namespace:
-                st.error("Please enter a namespace")
-            else:
-                # Call the separate function to handle repository addition
-                add_repository(repo_url, namespace, pc, pinecone_index, pinecone_index_name)
+        # Show repository form
+        show_repository_form(pc, pinecone_index, pinecone_index_name)
         
         st.stop()  # Stop execution here if no namespaces exist
     
@@ -214,14 +245,14 @@ def main():
     if selected_provider != st.session_state.llm_provider:
         st.session_state.llm_provider = selected_provider
         # Reset selected model when provider changes
-        st.session_state.selected_model = None
+        if "selected_model" in st.session_state:
+            st.session_state.selected_model = None
         st.rerun()  # Rerun to update available models
     
     # Fetch available models for the selected provider
     available_models = get_available_models(st.session_state.llm_provider)
     
-    # Model selection dropdown
-    # Set default model and index
+    # Set default model based on provider
     if st.session_state.llm_provider == "groq":
         # For GROQ, prefer a more powerful model
         preferred_groq_models = ["llama-3.3-70b-versatile", "llama3-70b-8192"]
@@ -260,31 +291,7 @@ def main():
         # Add Repository Tab
         with repo_tabs[0]:
             st.markdown("Index a public GitHub repository to enhance your RAG system.")
-            
-            # Form to collect repository information
-            with st.form("repository_form"):
-                repo_url = st.text_input(
-                    "GitHub Repository URL", 
-                    placeholder="https://github.com/username/repository",
-                    help="The URL of the public GitHub repository you want to index."
-                )
-                
-                namespace = st.text_input(
-                    "Namespace", 
-                    placeholder="my-repo",
-                    help="A unique identifier for this repository in your Pinecone index."
-                )
-                
-                submit_button = st.form_submit_button("Index Repository")
-            
-            if submit_button:
-                if not repo_url:
-                    st.error("Please enter a GitHub repository URL")
-                elif not namespace:
-                    st.error("Please enter a namespace")
-                else:
-                    # Call the separate function to handle repository addition
-                    add_repository(repo_url, namespace, pc, pinecone_index, pinecone_index_name)
+            show_repository_form(pc, pinecone_index, pinecone_index_name)
         
         # Delete Repository Tab
         with repo_tabs[1]:
@@ -328,10 +335,11 @@ def main():
             
             with repo_container:
                 for ns in namespace_list:
-                    st.write(f"- {ns}")
+                    url = st.session_state.repository_urls.get(ns, "Unknown URL")
+                    st.write(f"- {ns}: {url}")
         else:
             st.write("No repositories indexed yet.")
-            
+        
         return
     
     # Repository selector with aligned reindex button
@@ -385,10 +393,6 @@ def main():
                     st.rerun()
     
     st.caption(f"Currently browsing: {selected_namespace} | Using: {st.session_state.llm_provider.upper()} ({st.session_state.selected_model})")
-    
-    # Initialize chat history
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
     
     # Display chat messages from history on app rerun
     for message in st.session_state.messages:

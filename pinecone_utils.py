@@ -4,7 +4,7 @@ import time
 from pinecone import Pinecone as PineconeClient, ServerlessSpec
 
 # Use cache_resource instead of cache_data for non-serializable objects like Pinecone clients
-@st.cache_resource(ttl=300, show_spinner=False)
+@st.cache_resource(ttl=3600, show_spinner=False)
 def initialize_pinecone(api_key, index_name="codebase-rag"):
     """Initialize Pinecone client and ensure index exists with correct dimensions"""
     pc = PineconeClient(api_key=api_key)
@@ -19,6 +19,14 @@ def initialize_pinecone(api_key, index_name="codebase-rag"):
     # Override with explicit dimension if provided
     dimension = int(st.secrets.get("EMBEDDING_DIMENSION", dimension))
     
+    # Create a unique session state key for this index
+    index_state_key = f"index_checked_{index_name}"
+    if index_state_key not in st.session_state:
+        st.session_state[index_state_key] = False
+    
+    # Only show messages if we haven't checked this index before
+    should_show_messages = not st.session_state[index_state_key]
+    
     try:
         # Check if index exists
         indices = pc.list_indexes()
@@ -30,15 +38,17 @@ def initialize_pinecone(api_key, index_name="codebase-rag"):
                 index_description = pc.describe_index(index_name)
                 current_dimension = index_description.dimension
                 
-                if current_dimension != dimension:
+                if current_dimension != dimension and should_show_messages:
                     st.warning(f"Index '{index_name}' exists with dimension {current_dimension}, but your configuration requires {dimension} dimensions.")
                     st.warning(f"Please update your EMBEDDING_MODEL and EMBEDDING_DIMENSION settings to match the index, or create a new index with the correct dimensions.")
                     st.info(f"Current settings: EMBEDDING_MODEL={embedding_model}, EMBEDDING_DIMENSION={dimension}")
             except Exception as e:
-                st.error(f"Error checking index dimensions: {str(e)}")
+                if should_show_messages:
+                    st.error(f"Error checking index dimensions: {str(e)}")
         else:
             # Index doesn't exist, create it
-            st.warning(f"Index '{index_name}' does not exist. Creating it now...")
+            if should_show_messages:
+                st.warning(f"Index '{index_name}' does not exist. Creating it now...")
             try:
                 pc.create_index(
                     name=index_name,
@@ -49,15 +59,22 @@ def initialize_pinecone(api_key, index_name="codebase-rag"):
                         region="us-east-1"
                     )
                 )
-                st.success(f"Created index '{index_name}' with dimension {dimension}")
+                if should_show_messages:
+                    st.success(f"Created index '{index_name}' with dimension {dimension}")
                 time.sleep(5)  # Wait for index to be ready
             except Exception as e:
                 if "ALREADY_EXISTS" in str(e):
-                    st.info(f"Index '{index_name}' already exists.")
+                    if should_show_messages:
+                        st.info(f"Index '{index_name}' already exists.")
                 else:
-                    st.error(f"Error creating index: {str(e)}")
+                    if should_show_messages:
+                        st.error(f"Error creating index: {str(e)}")
     except Exception as e:
-        st.error(f"Error checking indexes: {str(e)}")
+        if should_show_messages:
+            st.error(f"Error checking indexes: {str(e)}")
+    
+    # Mark as checked to prevent repeated messages
+    st.session_state[index_state_key] = True
     
     # Connect to index
     index = pc.Index(index_name)
