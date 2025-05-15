@@ -100,9 +100,11 @@ def get_available_models(provider="groq"):
 
 def get_llm_model(provider="groq", selected_model=None):
     """Get appropriate model name based on provider"""
-    if selected_model:
+    # If a selected model is provided and not empty, use it
+    if selected_model and selected_model.strip():
         return selected_model
         
+    # Otherwise, get default from secrets or use hardcoded default
     if provider.lower() == "groq":
         return st.secrets.get("GROQ_MODEL", "llama-3.1-8b-instant")
     elif provider.lower() == "openai":
@@ -144,6 +146,9 @@ def perform_rag(query, client, pinecone_index, selected_namespace, llm_provider=
     try:
         # Get LLM provider from session state or secrets
         llm_provider = llm_provider or st.session_state.get("llm_provider", st.secrets.get("LLM_PROVIDER", "groq"))
+        
+        # Use the selected_model that was passed to this function
+        # This ensures the user's model selection is respected
         
         # Get embeddings dynamically based on configuration
         raw_query_embedding = get_embeddings(query)
@@ -199,9 +204,11 @@ def perform_rag(query, client, pinecone_index, selected_namespace, llm_provider=
         - Take a step by step approach in your problem-solving
         """
 
-        # Create the appropriate client and get model
+        # Create the appropriate client
         client = create_llm_client(llm_provider)
-        model = get_llm_model(llm_provider, selected_model)
+        
+        # Get the model, prioritizing the passed selected_model
+        model = selected_model if selected_model else get_llm_model(llm_provider)
         
         # Handle different provider APIs
         if llm_provider.lower() in ["groq", "openai"]:

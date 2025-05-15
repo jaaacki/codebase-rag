@@ -169,16 +169,15 @@ def main():
     if default_model in available_models:
         default_index = available_models.index(default_model)
     
+    # Modified: Direct selection without conditional update
     selected_model = st.sidebar.selectbox(
         "Select Model",
         options=available_models,
-        index=default_index,
-        key="model_selector"
+        index=default_index
     )
     
-    # Update session state when model changes
-    if selected_model != st.session_state.selected_model:
-        st.session_state.selected_model = selected_model
+    # Always update the session state with the selected model
+    st.session_state.selected_model = selected_model
     
     # Navigation options
     app_page = st.sidebar.radio("Navigation", ["Chat with Codebase", "Manage Repositories"])
