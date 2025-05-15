@@ -54,8 +54,55 @@ def create_llm_client(provider="groq"):
     else:
         raise ValueError(f"Unsupported LLM provider: {provider}")
 
-def get_llm_model(provider="groq"):
+def get_available_models(provider="groq"):
+    """Get list of available models for the selected provider"""
+    try:
+        client = create_llm_client(provider)
+        
+        if provider.lower() == "groq":
+            # GROQ models
+            response = client.models.list()
+            return [model.id for model in response.data]
+        elif provider.lower() == "openai":
+            # OpenAI models
+            response = client.models.list()
+            # Filter to only include chat completion models
+            chat_models = [
+                model.id for model in response.data 
+                if model.id.startswith(("gpt-3.5", "gpt-4")) and "vision" not in model.id
+            ]
+            # Sort models in a sensible order
+            sorted_models = sorted(chat_models, key=lambda x: (
+                # Put GPT-4 models first
+                0 if x.startswith("gpt-4") else 1,
+                # Then sort by version
+                x
+            ))
+            return sorted_models
+        elif provider.lower() == "anthropic":
+            # Anthropic doesn't have a models.list() endpoint in the same way
+            # Return hardcoded list of common models
+            return [
+                "claude-3-opus-20240229",
+                "claude-3-sonnet-20240229",
+                "claude-3-haiku-20240307"
+            ]
+    except Exception as e:
+        st.warning(f"Error fetching models for {provider}: {str(e)}")
+        # Return default models if we can't fetch
+        if provider.lower() == "groq":
+            return ["llama-3.1-8b-instant", "llama-3.1-70b-versatile"]
+        elif provider.lower() == "openai":
+            return ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo"]
+        elif provider.lower() == "anthropic":
+            return ["claude-3-opus-20240229", "claude-3-sonnet-20240229", "claude-3-haiku-20240307"]
+        return ["unknown"]
+
+def get_llm_model(provider="groq", selected_model=None):
     """Get appropriate model name based on provider"""
+    if selected_model:
+        return selected_model
+        
     if provider.lower() == "groq":
         return st.secrets.get("GROQ_MODEL", "llama-3.1-8b-instant")
     elif provider.lower() == "openai":
@@ -92,7 +139,7 @@ def summarize_context(contexts, max_tokens=30000):
     
     return result
 
-def perform_rag(query, client, pinecone_index, selected_namespace, llm_provider=None):
+def perform_rag(query, client, pinecone_index, selected_namespace, llm_provider=None, selected_model=None):
     """Perform RAG query and get response from LLM"""
     try:
         # Get LLM provider from session state or secrets
@@ -154,7 +201,7 @@ def perform_rag(query, client, pinecone_index, selected_namespace, llm_provider=
 
         # Create the appropriate client and get model
         client = create_llm_client(llm_provider)
-        model = get_llm_model(llm_provider)
+        model = get_llm_model(llm_provider, selected_model)
         
         # Handle different provider APIs
         if llm_provider.lower() in ["groq", "openai"]:

@@ -3,7 +3,7 @@ import streamlit as st
 from openai import OpenAI
 from pinecone_utils import initialize_pinecone, get_namespaces
 from github_utils import index_github_repo
-from embedding_utils import perform_rag, create_llm_client, get_llm_model
+from embedding_utils import perform_rag, create_llm_client, get_llm_model, get_available_models
 
 def main():
     st.title("Codebase RAG")
@@ -11,6 +11,10 @@ def main():
     # Initialize session state for LLM provider if it doesn't exist
     if "llm_provider" not in st.session_state:
         st.session_state.llm_provider = st.secrets.get("LLM_PROVIDER", "groq")
+    
+    # Initialize session state for selected model
+    if "selected_model" not in st.session_state:
+        st.session_state.selected_model = None
     
     # Initialize Pinecone and get list of namespaces
     pinecone_api_key = st.secrets["PINECONE_API_KEY"]
@@ -91,10 +95,29 @@ def main():
     # Update session state when provider changes
     if selected_provider != st.session_state.llm_provider:
         st.session_state.llm_provider = selected_provider
+        st.session_state.selected_model = None  # Reset selected model when provider changes
+        st.rerun()  # Rerun to update available models
     
-    # Display the current model being used
-    current_model = get_llm_model(st.session_state.llm_provider)
-    st.sidebar.caption(f"Using model: {current_model}")
+    # Fetch available models for the selected provider
+    st.sidebar.text("Loading models...")
+    available_models = get_available_models(st.session_state.llm_provider)
+    
+    # Model selection dropdown
+    default_model = get_llm_model(st.session_state.llm_provider)
+    default_index = 0
+    if default_model in available_models:
+        default_index = available_models.index(default_model)
+    
+    selected_model = st.sidebar.selectbox(
+        "Select Model",
+        options=available_models,
+        index=default_index,
+        key="model_selector"
+    )
+    
+    # Update session state when model changes
+    if selected_model != st.session_state.selected_model:
+        st.session_state.selected_model = selected_model
     
     # Navigation options
     app_page = st.sidebar.radio("Navigation", ["Chat with Codebase", "Add Repository"])
@@ -158,7 +181,7 @@ def main():
         key="selected_namespace"
     )
     
-    st.caption(f"Currently browsing: {selected_namespace} | Using: {st.session_state.llm_provider.upper()} ({current_model})")
+    st.caption(f"Currently browsing: {selected_namespace} | Using: {st.session_state.llm_provider.upper()} ({st.session_state.selected_model})")
     
     # Initialize chat history
     if "messages" not in st.session_state:
@@ -179,7 +202,7 @@ def main():
         
         # Get AI response using RAG
         with st.chat_message("assistant"):
-            with st.spinner(f"Generating response using {st.session_state.llm_provider.upper()}..."):
+            with st.spinner(f"Generating response using {st.session_state.llm_provider.upper()} ({st.session_state.selected_model})..."):
                 # Create a client for the selected provider
                 try:
                     response = perform_rag(
@@ -187,7 +210,8 @@ def main():
                         None,  # We'll create the client inside perform_rag
                         pinecone_index, 
                         selected_namespace,
-                        llm_provider=st.session_state.llm_provider
+                        llm_provider=st.session_state.llm_provider,
+                        selected_model=st.session_state.selected_model
                     )
                     st.markdown(response)
                 except Exception as e:
