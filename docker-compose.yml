@@ -1,0 +1,19 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: codebase-rag
+    ports:
+      - "8501:8501"
+    volumes:
+      - .:/app
+      - ./.env:/app/.env  # Mount .env file directly
+    restart: "no"
+    env_file:
+      - .env  # Load environment variables from .env file
+    environment:
+      # You can still override specific variables here if needed
+      # But the .env file will provide most values
+      - STREAMLIT_SERVER_PORT=8501
+      - STREAMLIT_SERVER_ADDRESS=0.0.0.0
