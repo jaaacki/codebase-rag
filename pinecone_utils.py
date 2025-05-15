@@ -3,6 +3,8 @@ import streamlit as st
 import time
 from pinecone import Pinecone as PineconeClient, ServerlessSpec
 
+# Use cache_resource instead of cache_data for non-serializable objects like Pinecone clients
+@st.cache_resource(ttl=300, show_spinner=False)
 def initialize_pinecone(api_key, index_name="codebase-rag"):
     """Initialize Pinecone client and ensure index exists with correct dimensions"""
     pc = PineconeClient(api_key=api_key)
@@ -61,12 +63,43 @@ def initialize_pinecone(api_key, index_name="codebase-rag"):
     index = pc.Index(index_name)
     return pc, index
 
+# No caching for namespace list to ensure it's always fresh
 def get_namespaces(index):
     """Get list of namespaces from Pinecone index"""
     try:
+        # Get index stats and extract namespaces
         stats = index.describe_index_stats()
         namespace_list = sorted(list(stats['namespaces'].keys()))
         return namespace_list
     except Exception as e:
         st.error(f"Error getting namespaces: {str(e)}")
         return []
+
+def delete_namespace(index, namespace):
+    """Delete a namespace from Pinecone index"""
+    try:
+        # Check if namespace exists
+        stats = index.describe_index_stats()
+        namespace_list = list(stats['namespaces'].keys())
+        
+        if namespace in namespace_list:
+            # Delete all vectors in the namespace
+            index.delete(namespace=namespace, delete_all=True)
+            
+            # Small delay to ensure the operation completes
+            time.sleep(2)
+            
+            # Verify deletion
+            stats_after = index.describe_index_stats()
+            if namespace not in stats_after['namespaces']:
+                return True, f"Successfully deleted namespace '{namespace}' from the index."
+            else:
+                vector_count = stats_after['namespaces'].get(namespace, {}).get('vector_count', 0)
+                if vector_count == 0:
+                    return True, f"Successfully deleted all vectors from namespace '{namespace}'."
+                else:
+                    return False, f"Namespace '{namespace}' still contains {vector_count} vectors after deletion attempt."
+        else:
+            return False, f"Namespace '{namespace}' not found in the index."
+    except Exception as e:
+        return False, f"Error deleting namespace: {str(e)}"

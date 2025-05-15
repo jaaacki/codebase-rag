@@ -1,12 +1,81 @@
 # streamlit_app.py
 import streamlit as st
+import time
 from openai import OpenAI
-from pinecone_utils import initialize_pinecone, get_namespaces
+from pinecone_utils import initialize_pinecone, get_namespaces, delete_namespace
 from github_utils import index_github_repo
 from embedding_utils import perform_rag, create_llm_client, get_llm_model, get_available_models
 
+def add_repository(repo_url, namespace, pc, pinecone_index, pinecone_index_name):
+    """Separate function to handle repository addition"""
+    with st.spinner("Indexing repository... This may take a while."):
+        success, message = index_github_repo(
+            repo_url=repo_url, 
+            namespace=namespace, 
+            pinecone_client=pc,
+            pinecone_index=pinecone_index,
+            index_name=pinecone_index_name
+        )
+        
+        if success:
+            st.success(message)
+            # Set flag in session state to trigger refresh on next run
+            st.session_state.repository_added = True
+            st.session_state.refresh_required = True
+            st.session_state.refresh_message = f"Repository '{namespace}' has been successfully added."
+            # Add a small delay to ensure UI updates before refresh
+            time.sleep(1)
+            st.rerun()
+        else:
+            st.error(message)
+    
+    return success, message
+
+def delete_repository(namespace_to_delete, pinecone_index):
+    """Separate function to handle repository deletion"""
+    with st.spinner(f"Deleting namespace '{namespace_to_delete}'..."):
+        success, message = delete_namespace(pinecone_index, namespace_to_delete)
+        
+        if success:
+            st.success(message)
+            # Set flag in session state to trigger refresh on next run
+            st.session_state.repository_deleted = True
+            st.session_state.refresh_required = True
+            st.session_state.refresh_message = f"Repository '{namespace_to_delete}' has been successfully deleted."
+            # Clear session state if the deleted namespace was selected
+            if "selected_namespace" in st.session_state and st.session_state.selected_namespace == namespace_to_delete:
+                del st.session_state.selected_namespace
+            # Add a small delay to ensure UI updates before refresh
+            time.sleep(1)
+            st.rerun()
+        else:
+            st.error(message)
+    
+    return success, message
+
 def main():
     st.title("Codebase RAG")
+    
+    # Initialize session state variables for tracking refresh
+    if "refresh_required" not in st.session_state:
+        st.session_state.refresh_required = False
+    
+    if "refresh_message" not in st.session_state:
+        st.session_state.refresh_message = ""
+    
+    if "repository_added" not in st.session_state:
+        st.session_state.repository_added = False
+    
+    if "repository_deleted" not in st.session_state:
+        st.session_state.repository_deleted = False
+    
+    # Check if we need to display a refresh notification
+    if st.session_state.refresh_required:
+        st.success(st.session_state.refresh_message)
+        # Reset the refresh flags
+        st.session_state.refresh_required = False
+        st.session_state.repository_added = False
+        st.session_state.repository_deleted = False
     
     # Initialize session state for LLM provider if it doesn't exist
     if "llm_provider" not in st.session_state:
@@ -20,6 +89,8 @@ def main():
     pinecone_api_key = st.secrets["PINECONE_API_KEY"]
     pinecone_index_name = st.secrets.get("PINECONE_INDEX_NAME", "codebase-rag")
     pc, pinecone_index = initialize_pinecone(pinecone_api_key, pinecone_index_name)
+    
+    # Get namespaces - no caching to ensure it's always fresh
     namespace_list = get_namespaces(pinecone_index)
     
     # Check if namespace list is empty
@@ -52,26 +123,16 @@ def main():
             elif not namespace:
                 st.error("Please enter a namespace")
             else:
-                with st.spinner("Indexing repository... This may take a while."):
-                    success, message = index_github_repo(
-                        repo_url=repo_url, 
-                        namespace=namespace, 
-                        pinecone_client=pc,
-                        pinecone_index=pinecone_index,
-                        index_name=pinecone_index_name
-                    )
-                    
-                    if success:
-                        st.success(message)
-                        st.info("Refreshing the page to show the newly indexed repository...")
-                        st.rerun()
-                    else:
-                        st.error(message)
+                # Call the separate function to handle repository addition
+                add_repository(repo_url, namespace, pc, pinecone_index, pinecone_index_name)
         
         st.stop()  # Stop execution here if no namespaces exist
     
     # Initialize session state for namespace if it doesn't exist
     if "selected_namespace" not in st.session_state:
+        st.session_state.selected_namespace = namespace_list[0]
+    elif st.session_state.selected_namespace not in namespace_list and namespace_list:
+        # If the selected namespace was deleted, select the first available one
         st.session_state.selected_namespace = namespace_list[0]
     
     # Sidebar for app navigation
@@ -120,55 +181,86 @@ def main():
         st.session_state.selected_model = selected_model
     
     # Navigation options
-    app_page = st.sidebar.radio("Navigation", ["Chat with Codebase", "Add Repository"])
+    app_page = st.sidebar.radio("Navigation", ["Chat with Codebase", "Manage Repositories"])
     
-    if app_page == "Add Repository":
-        st.subheader("Add a GitHub Repository")
-        st.markdown("Index a public GitHub repository to enhance your RAG system.")
+    if app_page == "Manage Repositories":
+        st.subheader("Manage GitHub Repositories")
         
-        # Form to collect repository information
-        with st.form("repository_form"):
-            repo_url = st.text_input(
-                "GitHub Repository URL", 
-                placeholder="https://github.com/username/repository",
-                help="The URL of the public GitHub repository you want to index."
-            )
-            
-            namespace = st.text_input(
-                "Namespace", 
-                placeholder="my-repo",
-                help="A unique identifier for this repository in your Pinecone index."
-            )
-            
-            submit_button = st.form_submit_button("Index Repository")
+        # Create tabs for different repository management actions
+        repo_tabs = st.tabs(["Add Repository", "Delete Repository"])
         
-        if submit_button:
-            if not repo_url:
-                st.error("Please enter a GitHub repository URL")
-            elif not namespace:
-                st.error("Please enter a namespace")
-            else:
-                with st.spinner("Indexing repository... This may take a while."):
-                    success, message = index_github_repo(
-                        repo_url=repo_url, 
-                        namespace=namespace, 
-                        pinecone_client=pc,
-                        pinecone_index=pinecone_index,
-                        index_name=pinecone_index_name
+        # Add Repository Tab
+        with repo_tabs[0]:
+            st.markdown("Index a public GitHub repository to enhance your RAG system.")
+            
+            # Form to collect repository information
+            with st.form("repository_form"):
+                repo_url = st.text_input(
+                    "GitHub Repository URL", 
+                    placeholder="https://github.com/username/repository",
+                    help="The URL of the public GitHub repository you want to index."
+                )
+                
+                namespace = st.text_input(
+                    "Namespace", 
+                    placeholder="my-repo",
+                    help="A unique identifier for this repository in your Pinecone index."
+                )
+                
+                submit_button = st.form_submit_button("Index Repository")
+            
+            if submit_button:
+                if not repo_url:
+                    st.error("Please enter a GitHub repository URL")
+                elif not namespace:
+                    st.error("Please enter a namespace")
+                else:
+                    # Call the separate function to handle repository addition
+                    add_repository(repo_url, namespace, pc, pinecone_index, pinecone_index_name)
+        
+        # Delete Repository Tab
+        with repo_tabs[1]:
+            st.markdown("Delete a repository namespace from your Pinecone index.")
+            
+            if namespace_list:
+                st.warning("⚠️ Warning: This action cannot be undone. All vectors in the selected namespace will be permanently deleted.")
+                
+                with st.form("delete_repository_form"):
+                    namespace_to_delete = st.selectbox(
+                        "Select Repository to Delete",
+                        options=namespace_list,
+                        key="namespace_to_delete"
                     )
                     
-                    if success:
-                        st.success(message)
-                        st.info("Refreshing the page to update the namespace list...")
-                        st.rerun()
+                    confirm_delete = st.checkbox(
+                        "I understand that this action is irreversible and all data in this namespace will be permanently deleted."
+                    )
+                    
+                    submit_button = st.form_submit_button("Delete Repository")
+                
+                if submit_button:
+                    if not confirm_delete:
+                        st.error("Please confirm the deletion by checking the confirmation box.")
                     else:
-                        st.error(message)
+                        # Call the separate function to handle repository deletion
+                        delete_repository(namespace_to_delete, pinecone_index)
+            else:
+                st.info("No repositories to delete.")
         
         # Show existing namespaces
         st.subheader("Existing Repositories")
         if namespace_list:
-            for ns in namespace_list:
-                st.write(f"- {ns}")
+            # Create a container for repositories with a refresh button
+            repo_container = st.container()
+            col1, col2 = st.columns([0.85, 0.15])
+            
+            with col2:
+                if st.button("🔄 Refresh"):
+                    st.rerun()
+            
+            with repo_container:
+                for ns in namespace_list:
+                    st.write(f"- {ns}")
         else:
             st.write("No repositories indexed yet.")
             

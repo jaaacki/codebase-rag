@@ -2,6 +2,7 @@
 import os
 import streamlit as st
 import tempfile
+import time  # Add this import
 from git import Repo
 from langchain.schema import Document
 from langchain_community.embeddings import HuggingFaceEmbeddings, OpenAIEmbeddings
@@ -108,6 +109,10 @@ def chunk_text(text, max_chars=30000):
 def index_github_repo(repo_url, namespace, pinecone_client, pinecone_index, index_name="codebase-rag"):
     """Index a GitHub repository in Pinecone"""
     try:
+        # Initialize session state variable if it doesn't exist
+        if "repository_added" not in st.session_state:
+            st.session_state.repository_added = False
+            
         # Create a temporary directory for cloning
         with tempfile.TemporaryDirectory() as temp_dir:
             # Show progress steps
@@ -118,6 +123,7 @@ def index_github_repo(repo_url, namespace, pinecone_client, pinecone_index, inde
             progress.progress(25)
             
             if not repo_path:
+                st.session_state.repository_added = False
                 return False, "Failed to clone repository"
             
             st.text("Step 2/4: Extracting code files...")
@@ -125,6 +131,7 @@ def index_github_repo(repo_url, namespace, pinecone_client, pinecone_index, inde
             progress.progress(50)
             
             if not file_content:
+                st.session_state.repository_added = False
                 return False, "No files found in repository"
             
             st.text(f"Step 3/4: Processing {len(file_content)} files...")
@@ -171,11 +178,22 @@ def index_github_repo(repo_url, namespace, pinecone_client, pinecone_index, inde
             
             progress.progress(100)
             
+            # Wait a moment to ensure the operation is reflected in Pinecone
+            time.sleep(2)
+            
             # Get index stats to confirm upload
             stats = pinecone_index.describe_index_stats()
             namespace_count = stats['namespaces'].get(namespace, {}).get('vector_count', 0)
             
+            # Set success in session state
+            st.session_state.repository_added = True
+            
+            # Set refresh flags in session state
+            st.session_state.refresh_required = True
+            st.session_state.refresh_message = f"Repository '{namespace}' has been successfully added."
+            
             return True, f"Successfully indexed repository. {namespace_count} vectors added to namespace '{namespace}'."
             
     except Exception as e:
+        st.session_state.repository_added = False
         return False, f"Error indexing repository: {str(e)}"
