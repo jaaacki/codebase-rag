@@ -3,22 +3,18 @@ import streamlit as st
 from openai import OpenAI
 from pinecone_utils import initialize_pinecone, get_namespaces
 from github_utils import index_github_repo
-from embedding_utils import perform_rag
+from embedding_utils import perform_rag, create_llm_client, get_llm_model
 
 def main():
     st.title("Codebase RAG")
     
-    # Initialize clients
-    client = OpenAI(
-        base_url="https://api.groq.com/openai/v1",
-        api_key=st.secrets["GROQ_API_KEY"]
-    )
-    
-    # Set the PINECONE_API_KEY as an environment variable
-    pinecone_api_key = st.secrets["PINECONE_API_KEY"]
-    pinecone_index_name = st.secrets.get("PINECONE_INDEX_NAME", "codebase-rag")
+    # Initialize session state for LLM provider if it doesn't exist
+    if "llm_provider" not in st.session_state:
+        st.session_state.llm_provider = st.secrets.get("LLM_PROVIDER", "groq")
     
     # Initialize Pinecone and get list of namespaces
+    pinecone_api_key = st.secrets["PINECONE_API_KEY"]
+    pinecone_index_name = st.secrets.get("PINECONE_INDEX_NAME", "codebase-rag")
     pc, pinecone_index = initialize_pinecone(pinecone_api_key, pinecone_index_name)
     namespace_list = get_namespaces(pinecone_index)
     
@@ -76,6 +72,29 @@ def main():
     
     # Sidebar for app navigation
     st.sidebar.title("Options")
+    
+    # Add LLM provider selection in sidebar
+    st.sidebar.subheader("LLM Provider")
+    llm_provider_options = ["groq", "openai"]
+    
+    # Check if keys exist and add providers
+    if "ANTHROPIC_API_KEY" in st.secrets:
+        llm_provider_options.append("anthropic")
+        
+    selected_provider = st.sidebar.selectbox(
+        "Select LLM Provider", 
+        options=llm_provider_options,
+        index=llm_provider_options.index(st.session_state.llm_provider),
+        key="provider_selector"
+    )
+    
+    # Update session state when provider changes
+    if selected_provider != st.session_state.llm_provider:
+        st.session_state.llm_provider = selected_provider
+    
+    # Display the current model being used
+    current_model = get_llm_model(st.session_state.llm_provider)
+    st.sidebar.caption(f"Using model: {current_model}")
     
     # Navigation options
     app_page = st.sidebar.radio("Navigation", ["Chat with Codebase", "Add Repository"])
@@ -135,11 +154,11 @@ def main():
     # Update sidebar selection to use session state
     selected_namespace = st.sidebar.selectbox(
         "Select Repository Namespace",
-        options=namespace_list,  # Use the sorted list
+        options=namespace_list,
         key="selected_namespace"
     )
     
-    st.caption(f"Currently browsing: {selected_namespace}")
+    st.caption(f"Currently browsing: {selected_namespace} | Using: {st.session_state.llm_provider.upper()} ({current_model})")
     
     # Initialize chat history
     if "messages" not in st.session_state:
@@ -160,9 +179,21 @@ def main():
         
         # Get AI response using RAG
         with st.chat_message("assistant"):
-            with st.spinner("Generating response..."):
-                response = perform_rag(prompt, client, pinecone_index, selected_namespace)
-                st.markdown(response)
+            with st.spinner(f"Generating response using {st.session_state.llm_provider.upper()}..."):
+                # Create a client for the selected provider
+                try:
+                    response = perform_rag(
+                        prompt, 
+                        None,  # We'll create the client inside perform_rag
+                        pinecone_index, 
+                        selected_namespace,
+                        llm_provider=st.session_state.llm_provider
+                    )
+                    st.markdown(response)
+                except Exception as e:
+                    error_msg = f"Error: {str(e)}"
+                    st.error(error_msg)
+                    response = error_msg
         # Add assistant response to chat history
         st.session_state.messages.append({"role": "assistant", "content": response})
 
