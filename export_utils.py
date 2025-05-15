@@ -10,10 +10,55 @@ def ensure_export_dir():
     os.makedirs(export_dir, exist_ok=True)
     return export_dir
 
-def generate_filename(extension="txt"):
-    """Generate a filename based on current timestamp"""
+# Update the generate_filename function to support custom filenames
+def generate_filename(extension="txt", custom_name=None):
+    """Generate a filename based on current timestamp or custom name"""
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # Use custom name if provided, otherwise use default format
+    if custom_name and custom_name.strip():
+        # Clean the custom name to ensure it's a valid filename
+        # Remove special characters that aren't allowed in filenames
+        import re
+        clean_name = re.sub(r'[<>:"/\\|?*]', '', custom_name.strip())
+        
+        # If cleaning left an empty string, fall back to default
+        if clean_name:
+            return f"{clean_name}.{extension}"
+    
+    # Default timestamp-based filename
     return f"chat_export_{timestamp}.{extension}"
+
+# Update the export_chat_message function to accept custom filename
+def export_chat_message(message, export_type="text", custom_filename=None):
+    """Export a single chat message to a file"""
+    try:
+        # Ensure export directory exists
+        export_dir = ensure_export_dir()
+        
+        # Get content to export
+        content = message["content"]
+        
+        # Generate filename based on export type and custom name
+        if export_type.lower() == "markdown" or export_type.lower() == "md":
+            # Format as markdown
+            content = convert_to_markdown(content)
+            filename = generate_filename("md", custom_filename)
+        else:
+            # Plain text export
+            filename = generate_filename("txt", custom_filename)
+        
+        # Full path to export file
+        export_path = os.path.join(export_dir, filename)
+        
+        # Write to file
+        with open(export_path, 'w', encoding='utf-8') as f:
+            f.write(content)
+        
+        return True, export_path
+        
+    except Exception as e:
+        return False, f"Error exporting message: {str(e)}"
 
 def convert_to_markdown(content, title=None):
     """
@@ -85,33 +130,3 @@ def convert_to_markdown(content, title=None):
         if title:
             return f"# {title}\n\n{content}"
         return content
-
-def export_chat_message(message, export_type="text"):
-    """Export a single chat message to a file"""
-    try:
-        # Ensure export directory exists
-        export_dir = ensure_export_dir()
-        
-        # Get content to export
-        content = message["content"]
-        
-        # Generate filename based on export type
-        if export_type.lower() == "markdown" or export_type.lower() == "md":
-            # Format as markdown
-            content = convert_to_markdown(content)
-            filename = generate_filename("md")
-        else:
-            # Plain text export
-            filename = generate_filename("txt")
-        
-        # Full path to export file
-        export_path = os.path.join(export_dir, filename)
-        
-        # Write to file
-        with open(export_path, 'w', encoding='utf-8') as f:
-            f.write(content)
-        
-        return True, export_path
-        
-    except Exception as e:
-        return False, f"Error exporting message: {str(e)}"

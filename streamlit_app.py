@@ -240,6 +240,22 @@ def show_repository_form(pc, pinecone_index, pinecone_index_name, repo_storage):
 
 def show_export_modal(message_id):
     """Show a modal to export message content"""
+    # Get the message by ID for filename suggestion
+    message_content = ""
+    if 0 <= message_id < len(st.session_state.messages):
+        message = st.session_state.messages[message_id]
+        message_content = message["content"]
+        
+        # Extract a potential filename from content (first few words)
+        default_filename = message_content.split()[:3]
+        default_filename = "_".join(default_filename)[:20].lower()
+        
+        # Clean the suggested filename
+        import re
+        default_filename = re.sub(r'[<>:"/\\|?*]', '', default_filename)
+    else:
+        default_filename = "chat_export"
+    
     # Set up message export modal
     with st.sidebar.expander("Export Message", expanded=True):
         st.write("Select export format:")
@@ -252,13 +268,20 @@ def show_export_modal(message_id):
             label_visibility="collapsed"
         )
         
+        # Add custom filename input
+        custom_filename = st.text_input(
+            "Filename (without extension)",
+            value=default_filename,
+            help="Enter a custom filename. Extension will be added automatically."
+        )
+        
         if st.button("Export"):
             # Get the message by ID
             if 0 <= message_id < len(st.session_state.messages):
                 message = st.session_state.messages[message_id]
                 
-                # Export the message
-                success, result = export_chat_message(message, export_type)
+                # Export the message with custom filename
+                success, result = export_chat_message(message, export_type, custom_filename)
                 
                 if success:
                     st.success(f"Message exported successfully to: {result}")
