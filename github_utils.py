@@ -1,8 +1,8 @@
-# github_utils.py
+# github_utils.py with improved progress UI
 import os
 import streamlit as st
 import tempfile
-import time  # Add this import
+import time
 from git import Repo
 from langchain.schema import Document
 from langchain_community.embeddings import HuggingFaceEmbeddings, OpenAIEmbeddings
@@ -112,88 +112,109 @@ def index_github_repo(repo_url, namespace, pinecone_client, pinecone_index, inde
         # Initialize session state variable if it doesn't exist
         if "repository_added" not in st.session_state:
             st.session_state.repository_added = False
+        
+        # Set up the progress container with consistent spacing
+        col1, _ = st.columns([1, 0.01])  # Create a column for the progress UI
+        with col1:
+            # Show progress steps with better spacing
+            progress_text = st.empty()
+            progress_bar = st.progress(0.0)
             
-        # Create a temporary directory for cloning
-        with tempfile.TemporaryDirectory() as temp_dir:
-            # Show progress steps
-            progress = st.progress(0)
-            st.text("Step 1/4: Cloning repository...")
-            
-            repo_path = clone_repository(repo_url, temp_dir)
-            progress.progress(25)
-            
-            if not repo_path:
-                st.session_state.repository_added = False
-                return False, "Failed to clone repository"
-            
-            st.text("Step 2/4: Extracting code files...")
-            file_content = get_main_files_content(repo_path)
-            progress.progress(50)
-            
-            if not file_content:
-                st.session_state.repository_added = False
-                return False, "No files found in repository"
-            
-            st.text(f"Step 3/4: Processing {len(file_content)} files...")
-            documents = []
-            
-            # Process files and create documents
-            for i, file in enumerate(file_content):
-                # Check file size and potentially split into chunks
-                content = file['content']
-                content_chunks = chunk_text(content)
+            # Create a temporary directory for cloning
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # Step 1: Cloning repository
+                progress_text.text("Step 1/4: Cloning repository...")
+                progress_bar.progress(0.0)
                 
-                for j, chunk in enumerate(content_chunks):
-                    # Create a truncated metadata copy for Pinecone
-                    metadata = {
-                        "filepath": file['name'],
-                        "type": "file",
-                        "name": file['name'],
-                        "line_number": 1,
-                        "chunk_number": j+1,
-                        "total_chunks": len(content_chunks),
-                        # Include shortened text in metadata, full text in content
-                        "text": chunk[:30000]  # Limit to 30KB to leave room for other metadata
-                    }
+                repo_path = clone_repository(repo_url, temp_dir)
+                progress_bar.progress(0.25)
+                
+                if not repo_path:
+                    st.session_state.repository_added = False
+                    return False, "Failed to clone repository"
+                
+                # Step 2: Extracting code files
+                progress_text.text("Step 2/4: Extracting code files...")
+                progress_bar.progress(0.25)
+                
+                file_content = get_main_files_content(repo_path)
+                progress_bar.progress(0.50)
+                
+                if not file_content:
+                    st.session_state.repository_added = False
+                    return False, "No files found in repository"
+                
+                # Step 3: Processing files
+                progress_text.text(f"Step 3/4: Processing {len(file_content)} files...")
+                progress_bar.progress(0.50)
+                
+                documents = []
+                
+                # Process files and create documents
+                for i, file in enumerate(file_content):
+                    # Update progress occasionally to show activity
+                    if i % max(1, len(file_content) // 10) == 0:
+                        progress_percent = 0.5 + (i / len(file_content) * 0.25)
+                        progress_bar.progress(progress_percent)
+                        
+                    # Check file size and potentially split into chunks
+                    content = file['content']
+                    content_chunks = chunk_text(content)
                     
-                    doc = Document(
-                        page_content=chunk,
-                        metadata=metadata
-                    )
-                    documents.append(doc)
-            
-            progress.progress(75)
-            st.text(f"Step 4/4: Creating embeddings and uploading to Pinecone...")
-            
-            # Get the appropriate embedding model
-            embedding_model = get_langchain_embeddings()
-            
-            # Create and store vectors
-            vectorstore = LangchainPinecone.from_documents(
-                documents=documents,
-                embedding=embedding_model,
-                index_name=index_name,
-                namespace=namespace
-            )
-            
-            progress.progress(100)
-            
-            # Wait a moment to ensure the operation is reflected in Pinecone
-            time.sleep(2)
-            
-            # Get index stats to confirm upload
-            stats = pinecone_index.describe_index_stats()
-            namespace_count = stats['namespaces'].get(namespace, {}).get('vector_count', 0)
-            
-            # Set success in session state
-            st.session_state.repository_added = True
-            
-            # Set refresh flags in session state
-            st.session_state.refresh_required = True
-            st.session_state.refresh_message = f"Repository '{namespace}' has been successfully added."
-            
-            return True, f"Successfully indexed repository. {namespace_count} vectors added to namespace '{namespace}'."
-            
+                    for j, chunk in enumerate(content_chunks):
+                        # Create a truncated metadata copy for Pinecone
+                        metadata = {
+                            "filepath": file['name'],
+                            "type": "file",
+                            "name": file['name'],
+                            "line_number": 1,
+                            "chunk_number": j+1,
+                            "total_chunks": len(content_chunks),
+                            # Include shortened text in metadata, full text in content
+                            "text": chunk[:30000]  # Limit to 30KB to leave room for other metadata
+                        }
+                        
+                        doc = Document(
+                            page_content=chunk,
+                            metadata=metadata
+                        )
+                        documents.append(doc)
+                
+                progress_bar.progress(0.75)
+                progress_text.text(f"Step 4/4: Creating embeddings and uploading to Pinecone...")
+                
+                # Get the appropriate embedding model
+                embedding_model = get_langchain_embeddings()
+                
+                # Create and store vectors
+                vectorstore = LangchainPinecone.from_documents(
+                    documents=documents,
+                    embedding=embedding_model,
+                    index_name=index_name,
+                    namespace=namespace
+                )
+                
+                progress_bar.progress(1.0)
+                
+                # Wait a moment to ensure the operation is reflected in Pinecone
+                time.sleep(2)
+                
+                # Get index stats to confirm upload
+                stats = pinecone_index.describe_index_stats()
+                namespace_count = stats['namespaces'].get(namespace, {}).get('vector_count', 0)
+                
+                # Set success in session state
+                st.session_state.repository_added = True
+                
+                # Set refresh flags in session state
+                st.session_state.refresh_required = True
+                st.session_state.refresh_message = f"Repository '{namespace}' has been successfully added."
+                
+                # Clear progress UI at the end
+                progress_text.empty()
+                
+                return True, f"Successfully indexed repository. {namespace_count} vectors added to namespace '{namespace}'."
+                
     except Exception as e:
         st.session_state.repository_added = False
         return False, f"Error indexing repository: {str(e)}"

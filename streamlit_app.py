@@ -1,10 +1,13 @@
-# streamlit_app.py
+# streamlit_app.py (with fixes for identified issues)
 import streamlit as st
 import time
+import os
 from openai import OpenAI
 from pinecone_utils import initialize_pinecone, get_namespaces, delete_namespace
 from github_utils import index_github_repo
 from embedding_utils import perform_rag, create_llm_client, get_llm_model, get_available_models
+from export_utils import export_chat_message  # Import the export functionality
+from repository_storage import RepositoryStorage  # Import the repository storage
 
 def init_session_state():
     """Initialize all session state variables"""
@@ -14,7 +17,7 @@ def init_session_state():
     if "namespace" not in st.session_state:
         st.session_state.namespace = ""
     
-    # Repository URLs storage
+    # Repository URLs storage with persistence
     if "repository_urls" not in st.session_state:
         st.session_state.repository_urls = {}
     
@@ -32,6 +35,10 @@ def init_session_state():
     if "show_reindex_modal" not in st.session_state:
         st.session_state.show_reindex_modal = False
     
+    # Operation in progress tracking
+    if "operation_in_progress" not in st.session_state:
+        st.session_state.operation_in_progress = False
+    
     # LLM provider selection
     if "llm_provider" not in st.session_state:
         st.session_state.llm_provider = st.secrets.get("LLM_PROVIDER", "groq")
@@ -43,43 +50,72 @@ def init_session_state():
     # Chat messages
     if "messages" not in st.session_state:
         st.session_state.messages = []
+    
+    # Export message state
+    if "export_message_id" not in st.session_state:
+        st.session_state.export_message_id = None
+    if "show_export_modal" not in st.session_state:
+        st.session_state.show_export_modal = False
 
-def add_repository(repo_url, namespace, pc, pinecone_index, pinecone_index_name):
+def add_repository(repo_url, namespace, pc, pinecone_index, pinecone_index_name, repo_storage):
     """Handle repository addition process"""
-    with st.spinner("Indexing repository... This may take a while."):
-        success, message = index_github_repo(
-            repo_url=repo_url, 
-            namespace=namespace, 
-            pinecone_client=pc,
-            pinecone_index=pinecone_index,
-            index_name=pinecone_index_name
-        )
-        
-        if success:
-            st.success(message)
-            # Store the repository URL in session state
+    # Set operation in progress flag
+    st.session_state.operation_in_progress = True
+    
+    progress_container = st.container()
+    
+    with progress_container:
+        with st.spinner("Indexing repository... This may take a while."):
+            # First store the URL in repository storage
+            repo_storage.store_repository(namespace, repo_url)
+            
+            # Also update session state
             if "repository_urls" not in st.session_state:
                 st.session_state.repository_urls = {}
             st.session_state.repository_urls[namespace] = repo_url
-            # Set flag in session state to trigger refresh on next run
-            st.session_state.repository_added = True
-            st.session_state.refresh_required = True
-            st.session_state.refresh_message = f"Repository '{namespace}' has been successfully added."
-            # Add a small delay to ensure UI updates before refresh
-            time.sleep(1)
-            st.rerun()
-        else:
-            st.error(message)
+            
+            # Now perform the indexing
+            success, message = index_github_repo(
+                repo_url=repo_url, 
+                namespace=namespace, 
+                pinecone_client=pc,
+                pinecone_index=pinecone_index,
+                index_name=pinecone_index_name
+            )
+            
+            # Reset operation flag
+            st.session_state.operation_in_progress = False
+            
+            if success:
+                st.success(message)
+                # Set flag in session state to trigger refresh on next run
+                st.session_state.repository_added = True
+                st.session_state.refresh_required = True
+                st.session_state.refresh_message = f"Repository '{namespace}' has been successfully added."
+                # Add a small delay to ensure UI updates before refresh
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.error(message)
     
     return success, message
 
-def delete_repository(namespace_to_delete, pinecone_index):
+def delete_repository(namespace_to_delete, pinecone_index, repo_storage):
     """Handle repository deletion process"""
+    # Set operation in progress flag
+    st.session_state.operation_in_progress = True
+    
     with st.spinner(f"Deleting namespace '{namespace_to_delete}'..."):
         success, message = delete_namespace(pinecone_index, namespace_to_delete)
         
+        # Reset operation flag
+        st.session_state.operation_in_progress = False
+        
         if success:
             st.success(message)
+            # Remove from repository storage
+            repo_storage.delete_repository(namespace_to_delete)
+            
             # Set flag in session state to trigger refresh on next run
             st.session_state.repository_deleted = True
             st.session_state.refresh_required = True
@@ -98,53 +134,79 @@ def delete_repository(namespace_to_delete, pinecone_index):
     
     return success, message
 
-def reindex_repository(namespace, repo_url, pc, pinecone_index, pinecone_index_name):
+def reindex_repository(namespace, repo_url, pc, pinecone_index, pinecone_index_name, repo_storage):
     """Function to handle repository reindexing"""
     try:
+        # Set operation in progress flag
+        st.session_state.operation_in_progress = True
+        
+        # Store the URL in repository storage
+        repo_storage.store_repository(namespace, repo_url)
+        
+        # Also update session state
+        if "repository_urls" not in st.session_state:
+            st.session_state.repository_urls = {}
+        st.session_state.repository_urls[namespace] = repo_url
+        
         # First delete the existing namespace
         with st.spinner(f"Deleting existing data for '{namespace}'..."):
             success, delete_message = delete_namespace(pinecone_index, namespace)
             
             if not success:
+                # Reset operation flag
+                st.session_state.operation_in_progress = False
                 st.error(f"Error deleting namespace: {delete_message}")
                 return False, delete_message
             
             # Small delay to ensure deletion completes
             time.sleep(2)
         
+        # Prepare progress display
+        progress_placeholder = st.empty()
+        progress_container = progress_placeholder.container()
+        
         # Then add the repository with the same namespace
-        with st.spinner(f"Reindexing repository '{namespace}'... This may take a while."):
-            success, add_message = index_github_repo(
-                repo_url=repo_url, 
-                namespace=namespace, 
-                pinecone_client=pc,
-                pinecone_index=pinecone_index,
-                index_name=pinecone_index_name
-            )
-            
-            if success:
-                st.success(f"Successfully reindexed repository '{namespace}'")
-                # Store the repository URL in session state
-                if "repository_urls" not in st.session_state:
-                    st.session_state.repository_urls = {}
-                st.session_state.repository_urls[namespace] = repo_url
-                # Set flag in session state to trigger refresh on next run
-                st.session_state.repository_added = True
-                st.session_state.refresh_required = True
-                st.session_state.refresh_message = f"Repository '{namespace}' has been successfully reindexed."
-                # Add a small delay to ensure UI updates before refresh
-                time.sleep(1)
-                st.rerun()
-                return True, add_message
-            else:
-                st.error(f"Error reindexing repository: {add_message}")
-                return False, add_message
+        with progress_container:
+            with st.spinner(f"Reindexing repository '{namespace}'... This may take a while."):
+                success, add_message = index_github_repo(
+                    repo_url=repo_url, 
+                    namespace=namespace, 
+                    pinecone_client=pc,
+                    pinecone_index=pinecone_index,
+                    index_name=pinecone_index_name
+                )
+                
+                # Reset operation flag
+                st.session_state.operation_in_progress = False
+                
+                if success:
+                    st.success(f"Successfully reindexed repository '{namespace}'")
+                    # Store the repository URL in storage
+                    repo_storage.store_repository(namespace, repo_url)
+                    
+                    # Set flag in session state to trigger refresh on next run
+                    st.session_state.repository_added = True
+                    st.session_state.refresh_required = True
+                    st.session_state.refresh_message = f"Repository '{namespace}' has been successfully reindexed."
+                    
+                    # Reset reindex modal
+                    st.session_state.show_reindex_modal = False
+                    
+                    # Add a small delay to ensure UI updates before refresh
+                    time.sleep(1)
+                    st.rerun()
+                    return True, add_message
+                else:
+                    st.error(f"Error reindexing repository: {add_message}")
+                    return False, add_message
     except Exception as e:
+        # Reset operation flag
+        st.session_state.operation_in_progress = False
         error_msg = f"Error during reindexing: {str(e)}"
         st.error(error_msg)
         return False, error_msg
 
-def show_repository_form(pc, pinecone_index, pinecone_index_name):
+def show_repository_form(pc, pinecone_index, pinecone_index_name, repo_storage):
     """Display repository addition form with persistent values"""
     with st.form("repository_form"):
         repo_url = st.text_input(
@@ -174,7 +236,66 @@ def show_repository_form(pc, pinecone_index, pinecone_index_name):
         elif not namespace:
             st.error("Please enter a namespace")
         else:
-            add_repository(repo_url, namespace, pc, pinecone_index, pinecone_index_name)
+            add_repository(repo_url, namespace, pc, pinecone_index, pinecone_index_name, repo_storage)
+
+def show_export_modal(message_id):
+    """Show a modal to export message content"""
+    # Set up message export modal
+    with st.sidebar.expander("Export Message", expanded=True):
+        st.write("Select export format:")
+        
+        export_type = st.radio(
+            "Export Format",
+            ["Text", "Markdown"],
+            key="export_format",
+            horizontal=True,
+            label_visibility="collapsed"
+        )
+        
+        if st.button("Export"):
+            # Get the message by ID
+            if 0 <= message_id < len(st.session_state.messages):
+                message = st.session_state.messages[message_id]
+                
+                # Export the message
+                success, result = export_chat_message(message, export_type)
+                
+                if success:
+                    st.success(f"Message exported successfully to: {result}")
+                else:
+                    st.error(result)
+            else:
+                st.error("Message not found.")
+                
+        if st.button("Cancel"):
+            # Reset the modal state
+            st.session_state.show_export_modal = False
+            st.session_state.export_message_id = None
+            st.rerun()
+
+def render_message_with_export(message, index):
+    """Render a chat message with export button"""
+    # Only show export button for assistant messages
+    if message["role"] == "assistant":
+        col1, col2 = st.columns([0.95, 0.05])
+        
+        # Display the message content in the first column
+        with col1:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
+        
+        # Display the export button in the second column
+        with col2:
+            # Position the button at the top right of the message
+            st.write("")  # Add a bit of space at the top
+            if st.button("💾", key=f"export_btn_{index}", help="Export this message"):
+                st.session_state.export_message_id = index
+                st.session_state.show_export_modal = True
+                st.rerun()
+    else:
+        # Regular rendering for user messages
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
 
 def main():
     """Main application function"""
@@ -182,6 +303,12 @@ def main():
     
     # Initialize all session state variables
     init_session_state()
+    
+    # Initialize repository storage
+    repo_storage = RepositoryStorage()
+    
+    # Load repository URLs from persistent storage to session state
+    repo_storage.export_to_session_state()
     
     # Check if we need to display a refresh notification
     if st.session_state.refresh_required:
@@ -203,6 +330,10 @@ def main():
     # Get namespaces - no caching to ensure it's always fresh
     namespace_list = get_namespaces(pinecone_index)
     
+    # Import repository URLs from session state to persistent storage
+    # This ensures we capture any URLs added during the session
+    repo_storage.import_from_session_state()
+    
     # Check if namespace list is empty
     if not namespace_list:
         st.warning("No namespaces found in your Pinecone index. You need to add data to the index first.")
@@ -212,7 +343,7 @@ def main():
         st.markdown("Index a public GitHub repository to start using the RAG system.")
         
         # Show repository form
-        show_repository_form(pc, pinecone_index, pinecone_index_name)
+        show_repository_form(pc, pinecone_index, pinecone_index_name, repo_storage)
         
         st.stop()  # Stop execution here if no namespaces exist
     
@@ -279,6 +410,10 @@ def main():
     # Always update the session state with the selected model
     st.session_state.selected_model = selected_model
     
+    # Show export modal if enabled
+    if st.session_state.show_export_modal and st.session_state.export_message_id is not None:
+        show_export_modal(st.session_state.export_message_id)
+    
     # Navigation options
     app_page = st.sidebar.radio("Navigation", ["Chat with Codebase", "Manage Repositories"])
     
@@ -291,7 +426,7 @@ def main():
         # Add Repository Tab
         with repo_tabs[0]:
             st.markdown("Index a public GitHub repository to enhance your RAG system.")
-            show_repository_form(pc, pinecone_index, pinecone_index_name)
+            show_repository_form(pc, pinecone_index, pinecone_index_name, repo_storage)
         
         # Delete Repository Tab
         with repo_tabs[1]:
@@ -318,7 +453,7 @@ def main():
                         st.error("Please confirm the deletion by checking the confirmation box.")
                     else:
                         # Call the separate function to handle repository deletion
-                        delete_repository(namespace_to_delete, pinecone_index)
+                        delete_repository(namespace_to_delete, pinecone_index, repo_storage)
             else:
                 st.info("No repositories to delete.")
         
@@ -335,7 +470,8 @@ def main():
             
             with repo_container:
                 for ns in namespace_list:
-                    url = st.session_state.repository_urls.get(ns, "Unknown URL")
+                    # Get URL from storage first, then from session state as fallback
+                    url = repo_storage.get_repository_url(ns) or st.session_state.repository_urls.get(ns, "Unknown URL")
                     st.write(f"- {ns}: {url}")
         else:
             st.write("No repositories indexed yet.")
@@ -364,8 +500,8 @@ def main():
         with st.sidebar.expander("Reindex Repository", expanded=True):
             st.warning("⚠️ This will delete and reindex the selected repository namespace.")
             
-            # Get stored URL if available
-            default_url = st.session_state.repository_urls.get(selected_namespace, "")
+            # Get URL from storage first, then from session state as fallback
+            default_url = repo_storage.get_repository_url(selected_namespace) or st.session_state.repository_urls.get(selected_namespace, "")
             
             repo_url = st.text_input(
                 "GitHub Repository URL", 
@@ -381,7 +517,7 @@ def main():
                 if st.button("Confirm") and confirm and repo_url:
                     # Call the reindex function
                     success, message = reindex_repository(
-                        selected_namespace, repo_url, pc, pinecone_index, pinecone_index_name
+                        selected_namespace, repo_url, pc, pinecone_index, pinecone_index_name, repo_storage
                     )
                     if success:
                         # Reset the modal state
@@ -394,10 +530,9 @@ def main():
     
     st.caption(f"Currently browsing: {selected_namespace} | Using: {st.session_state.llm_provider.upper()} ({st.session_state.selected_model})")
     
-    # Display chat messages from history on app rerun
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+    # Display chat messages from history on app rerun with export buttons
+    for i, message in enumerate(st.session_state.messages):
+        render_message_with_export(message, i)
     
     # React to user input
     if prompt := st.chat_input("Ask a question about your codebase..."):
@@ -427,6 +562,24 @@ def main():
                     response = error_msg
         # Add assistant response to chat history
         st.session_state.messages.append({"role": "assistant", "content": response})
+        
+        # Show export button for this new message
+        last_msg_idx = len(st.session_state.messages) - 1
+        col1, col2 = st.columns([0.95, 0.05])
+        with col2:
+            st.write("")  # Add a bit of space
+            if st.button("💾", key=f"export_btn_{last_msg_idx}", help="Export this message"):
+                st.session_state.export_message_id = last_msg_idx
+                st.session_state.show_export_modal = True
+                st.rerun()
+
+# Also modify github_utils.py's index_github_repo function to improve progress UI
+def customize_progress_ui():
+    """
+    This function is just a note to also modify github_utils.py
+    to improve the progress display spacing if needed
+    """
+    pass
 
 if __name__ == "__main__":
     main()
