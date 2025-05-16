@@ -12,11 +12,6 @@ RUN apt-get update && apt-get install -y \
 # Copy requirements first to leverage Docker cache
 COPY requirements.txt .
 
-# Add new dependencies for GitHub RAG
-RUN echo "pygithub" >> requirements.txt \
-    && echo "gitpython" >> requirements.txt \
-    && echo "langchain-pinecone" >> requirements.txt
-
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 

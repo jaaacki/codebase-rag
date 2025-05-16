@@ -1,7 +1,8 @@
-# embedding_utils.py
+# Updated embedding_utils.py with token tracking
 from sentence_transformers import SentenceTransformer
 from openai import OpenAI
 import streamlit as st
+from token_utils import track_token_usage, count_tokens
 
 def get_embeddings(text, client=None, model=None, provider=None):
     """Generate embeddings using the specified model and provider"""
@@ -9,6 +10,9 @@ def get_embeddings(text, client=None, model=None, provider=None):
     # Get embedding configuration from secrets
     provider = provider or st.secrets.get("EMBEDDING_PROVIDER", "openai")
     model = model or st.secrets.get("EMBEDDING_MODEL", "text-embedding-ada-002")
+    
+    # Track token usage for embedding
+    track_token_usage(text, model=model, purpose="embedding", precise=True)
     
     # Generate embeddings based on provider
     if provider.lower() == "openai":
@@ -149,32 +153,51 @@ def summarize_context(contexts, max_tokens=30000):
     if total_chars <= max_tokens:
         return contexts
     
+    # Count tokens instead of characters for better estimation
+    total_token_count = 0
+    for ctx in contexts:
+        total_token_count += count_tokens(ctx)
+    
+    if total_token_count <= max_tokens:
+        return contexts
+    
     # Simple approach: Keep the most relevant contexts (first few matches)
     # and truncate others if needed
     result = []
-    current_chars = 0
+    current_tokens = 0
     for ctx in contexts:
         # Always include at least first line of each context (the header)
         header = ctx.split('\n')[0]
-        if current_chars + len(ctx) <= max_tokens:
+        header_tokens = count_tokens(header)
+        
+        # Calculate tokens for this context
+        ctx_tokens = count_tokens(ctx)
+        
+        if current_tokens + ctx_tokens <= max_tokens:
             result.append(ctx)
-            current_chars += len(ctx)
+            current_tokens += ctx_tokens
         else:
             # Only include the header for this one
-            result.append(header + "\n[Context truncated to reduce token count]")
-            current_chars += len(header) + 40  # Approximate length of truncation message
+            truncation_message = "\n[Context truncated to reduce token count]"
+            truncated_ctx = header + truncation_message
+            truncated_tokens = count_tokens(truncated_ctx)
+            result.append(truncated_ctx)
+            current_tokens += truncated_tokens
         
         # Stop if we're approaching the limit
-        if current_chars >= max_tokens * 0.9:
+        if current_tokens >= max_tokens * 0.9:
             break
     
     return result
 
 def perform_rag(query, client, pinecone_index, selected_namespace, llm_provider=None, selected_model=None):
-    """Perform RAG query and get response from LLM"""
+    """Perform RAG query and get response from LLM with token tracking"""
     try:
         # Get LLM provider from session state or secrets
         llm_provider = llm_provider or st.session_state.get("llm_provider", st.secrets.get("LLM_PROVIDER", "groq"))
+        
+        # Track token usage for query
+        track_token_usage(query, purpose="chat_input", precise=True)
         
         # Get embeddings dynamically based on configuration
         raw_query_embedding = get_embeddings(query)
@@ -212,6 +235,12 @@ def perform_rag(query, client, pinecone_index, selected_namespace, llm_provider=
             "QUESTION:\n" + query
         )
 
+        # Track token usage for the augmented query
+        augmented_query_tokens = track_token_usage(augmented_query, purpose="rag_context", precise=True)
+        
+        # Show token usage information
+        st.sidebar.info(f"RAG context: {augmented_query_tokens:,} tokens")
+
         system_prompt = """You are a Senior Software Engineer specializing in code analysis.
         
         Analyze the provided code context carefully, considering:
@@ -230,6 +259,9 @@ def perform_rag(query, client, pinecone_index, selected_namespace, llm_provider=
         - Take a step by step approach in your problem-solving
         """
 
+        # Track system prompt tokens
+        system_prompt_tokens = track_token_usage(system_prompt, purpose="system_prompt", precise=True)
+
         # Create the appropriate client
         client = create_llm_client(llm_provider)
         
@@ -244,6 +276,15 @@ def perform_rag(query, client, pinecone_index, selected_namespace, llm_provider=
         else:
             model = selected_model or get_llm_model(llm_provider)
         
+        # Track token usage information in UI
+        token_usage = st.session_state.token_usage
+        st.sidebar.info(
+            f"Token usage:\n"
+            f"- Query: {token_usage.get('chat_input', 0):,}\n"
+            f"- System: {token_usage.get('system_prompt', 0):,}\n"
+            f"- Context: {token_usage.get('rag_context', 0):,}"
+        )
+        
         # Handle different provider APIs
         if llm_provider.lower() in ["groq", "openai"]:
             llm_response = client.chat.completions.create(
@@ -254,7 +295,25 @@ def perform_rag(query, client, pinecone_index, selected_namespace, llm_provider=
                 ]
             )
             
-            return llm_response.choices[0].message.content
+            response_text = llm_response.choices[0].message.content
+            
+            # Track token usage for the response
+            response_tokens = track_token_usage(response_text, purpose="chat_output", precise=True)
+            
+            # If we have usage information from the API, use that
+            completion_tokens = getattr(llm_response.usage, "completion_tokens", None)
+            prompt_tokens = getattr(llm_response.usage, "prompt_tokens", None)
+            
+            if completion_tokens and prompt_tokens:
+                # Update with more accurate token counts
+                st.sidebar.info(
+                    f"API reported usage:\n"
+                    f"- Prompt: {prompt_tokens:,} tokens\n"
+                    f"- Completion: {completion_tokens:,} tokens\n"
+                    f"- Total: {prompt_tokens + completion_tokens:,} tokens"
+                )
+            
+            return response_text
             
         elif llm_provider.lower() == "anthropic":
             message = client.messages.create(
@@ -264,7 +323,25 @@ def perform_rag(query, client, pinecone_index, selected_namespace, llm_provider=
                     {"role": "user", "content": augmented_query}
                 ]
             )
-            return message.content[0].text
+            response_text = message.content[0].text
+            
+            # Track token usage for the response
+            response_tokens = track_token_usage(response_text, purpose="chat_output", precise=True)
+            
+            # If we have usage information from the API, use that
+            input_tokens = getattr(message, "usage", {}).get("input_tokens", None)
+            output_tokens = getattr(message, "usage", {}).get("output_tokens", None)
+            
+            if input_tokens and output_tokens:
+                # Update with more accurate token counts
+                st.sidebar.info(
+                    f"API reported usage:\n"
+                    f"- Input: {input_tokens:,} tokens\n"
+                    f"- Output: {output_tokens:,} tokens\n"
+                    f"- Total: {input_tokens + output_tokens:,} tokens"
+                )
+            
+            return response_text
         
         else:
             return f"Unsupported LLM provider: {llm_provider}"

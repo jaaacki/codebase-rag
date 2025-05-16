@@ -17,3 +17,10 @@ services:
       # But the .env file will provide most values
       - STREAMLIT_SERVER_PORT=8501
       - STREAMLIT_SERVER_ADDRESS=0.0.0.0
+    # Add resource limits to prevent container being killed
+    deploy:
+      resources:
+        limits:
+          memory: 4G  # Set an appropriate memory limit
+        reservations:
+          memory: 2G
