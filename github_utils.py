@@ -1,4 +1,4 @@
-# github_utils.py with Qdrant support
+# github_utils.py with Qdrant support and fixed dimensions
 import os
 import streamlit as st
 import tempfile
@@ -96,6 +96,39 @@ def get_langchain_embeddings():
         raise ValueError(f"Unsupported embedding provider: {provider}")
 
 
+def get_embedding_dimensions(embed):
+    """Get the dimensions of the embedding model"""
+    if isinstance(embed, OpenAIEmbeddings):
+        # Get model name
+        model_name = embed.model if hasattr(embed, 'model') else st.secrets.get("EMBEDDING_MODEL", "text-embedding-3-large")
+        
+        # Determine dimensions based on the model name
+        if "text-embedding-3-large" in model_name:
+            return 3072
+        elif "text-embedding-3-small" in model_name:
+            return 1536
+        elif "text-embedding-ada-002" in model_name:
+            return 1536
+        else:
+            # Default fallback dimension for older OpenAI models
+            return 1536
+    elif isinstance(embed, HuggingFaceEmbeddings):
+        # For HuggingFace, we can try to get dimensions from the model
+        if hasattr(embed, 'client') and hasattr(embed.client, 'get_sentence_embedding_dimension'):
+            return embed.client.get_sentence_embedding_dimension()
+        
+        # Default values for common HuggingFace models
+        model_name = embed.model_name if hasattr(embed, 'model_name') else ""
+        if "all-mpnet-base-v2" in model_name:
+            return 768
+        else:
+            # Default fallback dimension for HuggingFace models
+            return 768
+    else:
+        # Default fallback dimension
+        return 1536
+
+
 def chunk_text(text, max_chars=30000):
     """Fallback simpler chunking by char length"""
     if len(text) <= max_chars:
@@ -185,6 +218,10 @@ def index_github_repo(repo_url, namespace, qdrant_client=None, pinecone_index=No
                 progress_bar.progress(0.7)
                 log_mem()
                 embed = get_langchain_embeddings()
+                
+                # Get the embedding dimensions based on the model
+                embed_dimensions = get_embedding_dimensions(embed)
+                st.info(f"Using embedding dimensions: {embed_dimensions}")
 
                 # Step 5: Upload to Qdrant
                 progress_text.text("Step 5/5: Uploading to Qdrant...")
@@ -196,7 +233,7 @@ def index_github_repo(repo_url, namespace, qdrant_client=None, pinecone_index=No
                         from qdrant_client.models import VectorParams, Distance
                         qdrant_client.create_collection(
                             collection_name=namespace,
-                            vectors_config=VectorParams(size=embed.dimensions, distance=Distance.COSINE)
+                            vectors_config=VectorParams(size=embed_dimensions, distance=Distance.COSINE)
                         )
                     except Exception as e:
                         # Ignore errors if collection already exists
