@@ -13,3 +13,5 @@ cat /app/.streamlit/secrets.toml | sed -E 's/([A-Za-z_]+_API_KEY\s*=\s*)"[^"]+"/
 
 echo "Starting Streamlit..."
 exec streamlit run /app/app.py --server.port=8501 --server.address=0.0.0.0
+# exec streamlit run /app/debug_repo.py --server.port=8501 --server.address=0.0.0.0
+# exec streamlit run /app/debug_select.py --server.port=8501 --server.address=0.0.0.0
