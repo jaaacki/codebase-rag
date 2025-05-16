@@ -1,5 +1,7 @@
-# app_components/ui_components.py with Add Repository button
+# app_components/ui_components.py - Updated Repository Management UI
+
 import streamlit as st
+import time
 from embedding_utils import get_available_models, get_llm_model
 from app_components.app_state import show_token_usage_panel
 
@@ -191,9 +193,17 @@ def setup_repository_selector(pc, pinecone_index, pinecone_index_name, repo_stor
 
 def show_repository_management(pc, pinecone_index, pinecone_index_name, repo_storage, namespace_list):
     """Show the repository management UI"""
-    # Local import to avoid circular dependencies
-    from app_components.repository_management import show_repository_form, delete_repository
-    
+    # Direct import of the new simplified functions to avoid circular imports
+    import importlib
+    try:
+        # Try to reload the module to ensure we have the latest version
+        import app_components.repository_management
+        importlib.reload(app_components.repository_management)
+        from app_components.repository_management import show_repository_form, delete_repository
+    except Exception as e:
+        st.error(f"Error importing repository management functions: {str(e)}")
+        return
+
     st.subheader("Manage GitHub Repositories")
     
     # Create tabs for different repository management actions
@@ -202,7 +212,12 @@ def show_repository_management(pc, pinecone_index, pinecone_index_name, repo_sto
     # Add Repository Tab
     with repo_tabs[0]:
         st.markdown("Index a public GitHub repository to enhance your RAG system.")
-        show_repository_form(pc, pinecone_index, pinecone_index_name, repo_storage)
+        try:
+            show_repository_form(pc, pinecone_index, pinecone_index_name, repo_storage)
+        except Exception as e:
+            st.error(f"Error showing repository form: {str(e)}")
+            import traceback
+            st.write(f"Exception details: {traceback.format_exc()}")
     
     # Delete Repository Tab
     with repo_tabs[1]:
@@ -211,16 +226,19 @@ def show_repository_management(pc, pinecone_index, pinecone_index_name, repo_sto
         if namespace_list:
             st.warning("⚠️ Warning: This action cannot be undone. All vectors in the selected namespace will be permanently deleted.")
             
-            with st.form("delete_repository_form"):
+            # Use unique keys for delete form
+            delete_form_key = "delete_repository_form_" + str(int(time.time()))
+            
+            with st.form(delete_form_key):
                 namespace_to_delete = st.selectbox(
                     "Select Repository to Delete",
                     options=namespace_list,
-                    key="namespace_to_delete"
+                    key=f"namespace_to_delete_{delete_form_key}"
                 )
                 
                 confirm_delete = st.checkbox(
                     "I understand that this action is irreversible and all data in this namespace will be permanently deleted.",
-                    key="confirm_delete_checkbox"  # Added unique key
+                    key=f"confirm_delete_{delete_form_key}"
                 )
                 
                 submit_button = st.form_submit_button("Delete Repository")
@@ -230,7 +248,19 @@ def show_repository_management(pc, pinecone_index, pinecone_index_name, repo_sto
                     st.error("Please confirm the deletion by checking the confirmation box.")
                 else:
                     # Call the separate function to handle repository deletion
-                    delete_repository(namespace_to_delete, pinecone_index, repo_storage)
+                    with st.spinner("Deleting repository..."):
+                        try:
+                            success, message = delete_repository(namespace_to_delete, pinecone_index, repo_storage)
+                            if success:
+                                st.success(message)
+                                # Force page refresh after successful deletion
+                                st.rerun()
+                            else:
+                                st.error(message)
+                        except Exception as e:
+                            st.error(f"Error deleting repository: {str(e)}")
+                            import traceback
+                            st.write(f"Exception details: {traceback.format_exc()}")
         else:
             st.info("No repositories to delete.")
     
