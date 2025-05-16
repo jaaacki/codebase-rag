@@ -58,7 +58,7 @@ def create_llm_client(provider="groq"):
     else:
         raise ValueError(f"Unsupported LLM provider: {provider}")
 
-def get_available_models(provider="groq"):
+def get_available_models(provider="openai"):
     """Get list of available models for the selected provider"""
     try:
         client = create_llm_client(provider)
@@ -74,11 +74,13 @@ def get_available_models(provider="groq"):
                     model for model in models 
                     if "whisper" not in model.lower() and 
                        "tts" not in model.lower() and
-                       model.startswith(("llama", "meta-llama", "mistral", "gemma", "qwen"))
+                       (model.startswith(("llama", "meta-llama", "mistral", "gemma", "qwen")) or
+                        "mixtral" in model.lower() or "falcon" in model.lower())
                 ]
                 
                 # If we don't find any LLM models, use all models
                 if not llm_models:
+                    st.warning("No LLM models found in GROQ API response. Using all available models.")
                     llm_models = models
                 
                 # Sort models: larger models first, then by name
@@ -89,6 +91,9 @@ def get_available_models(provider="groq"):
                     x
                 ))
                 
+                if not sorted_models:
+                    raise ValueError("No models returned from API")
+                
                 return sorted_models
                 
             except Exception as e:
@@ -97,20 +102,30 @@ def get_available_models(provider="groq"):
                 return ["llama-3.3-70b-versatile", "llama3-70b-8192", "llama-3.1-8b-instant"]
         elif provider.lower() == "openai":
             # OpenAI models
-            response = client.models.list()
-            # Filter to only include chat completion models
-            chat_models = [
-                model.id for model in response.data 
-                if model.id.startswith(("gpt-3.5", "gpt-4")) and "vision" not in model.id
-            ]
-            # Sort models in a sensible order
-            sorted_models = sorted(chat_models, key=lambda x: (
-                # Put GPT-4 models first
-                0 if x.startswith("gpt-4") else 1,
-                # Then sort by version
-                x
-            ))
-            return sorted_models
+            try:
+                response = client.models.list()
+                # Filter to only include chat completion models
+                chat_models = [
+                    model.id for model in response.data 
+                    if model.id.startswith(("gpt-3.5", "gpt-4")) and "vision" not in model.id
+                ]
+                # Sort models in a sensible order
+                sorted_models = sorted(chat_models, key=lambda x: (
+                    # Put GPT-4 models first
+                    0 if x.startswith("gpt-4") else 1,
+                    # Then sort by version
+                    x
+                ))
+                
+                if not sorted_models:
+                    raise ValueError("No chat models returned from API")
+                
+                return sorted_models
+            except Exception as e:
+                st.warning(f"Error getting OpenAI models: {str(e)}")
+                # Fallback OpenAI models
+                return ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo"]
+                
         elif provider.lower() == "anthropic":
             # Anthropic doesn't have a models.list() endpoint in the same way
             # Return hardcoded list of common models
