@@ -86,62 +86,24 @@ def setup_repository_selector(pc, pinecone_index, pinecone_index_name, repo_stor
     from app_components.repository_management import reindex_repository
     
     st.sidebar.subheader("Repository")
-    cols = st.sidebar.columns([0.85, 0.15])  # Adjust for better alignment
     
-    with cols[0]:
-        selected_namespace = st.selectbox(
-            "Select Repository Namespace",
-            options=namespace_list,
-            key="selected_namespace",
-            label_visibility="collapsed"  # Hide duplicate label
-        )
+    # Simple selectbox for repository namespace - NO COLUMNS in sidebar
+    selected_namespace = st.sidebar.selectbox(
+        "Select Repository Namespace",
+        options=namespace_list,
+        key="selected_namespace"
+    )
     
-    with cols[1]:
-        reindex_button = st.button("🔄", help="Reindex this repository with the latest code")
-        if reindex_button:
-            st.session_state.show_reindex_modal = True
+    # Separate reindex button
+    reindex_button = st.sidebar.button("🔄 Reindex Repository", help="Reindex this repository with the latest code")
+    if reindex_button:
+        st.session_state.show_reindex_modal = True
     
     # Show reindex modal if button was clicked
     if st.session_state.show_reindex_modal:
-        with st.sidebar.expander("Reindex Repository", expanded=True):
-            st.warning("⚠️ This will delete and reindex the selected repository namespace.")
-            
-            # Get URL from storage first, then from session state as fallback
-            default_url = repo_storage.get_repository_url(selected_namespace) or st.session_state.repository_urls.get(selected_namespace, "")
-            
-            repo_url = st.text_input(
-                "GitHub Repository URL", 
-                value=default_url,
-                placeholder="https://github.com/username/repository",
-                help="Enter the GitHub URL of the repository to reindex with latest code"
-            )
-            
-            # Add batch size selection
-            batch_size = st.slider(
-                "Batch size (files per batch)", 
-                min_value=1, 
-                max_value=20,
-                value=st.session_state.batch_size,
-                help="Lower values help avoid token limit errors for large repos."
-            )
-            
-            confirm = st.checkbox("I understand this will replace the existing data")
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("Confirm") and confirm and repo_url:
-                    # Call the reindex function
-                    success, message = reindex_repository(
-                        selected_namespace, repo_url, pc, pinecone_index, pinecone_index_name, repo_storage, batch_size
-                    )
-                    if success:
-                        # Reset the modal state
-                        st.session_state.show_reindex_modal = False
-            with col2:
-                if st.button("Cancel"):
-                    # Reset the modal state
-                    st.session_state.show_reindex_modal = False
-                    st.rerun()
+        # Create reindex UI in a separate container in the MAIN AREA instead of sidebar
+        # We'll show this only if the modal state is active
+        st.session_state.show_sidebar_modal = True
     
     return selected_namespace
 
