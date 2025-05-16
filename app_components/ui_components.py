@@ -1,7 +1,60 @@
-# app_components/ui_components.py
+# app_components/ui_components.py with Add Repository button
 import streamlit as st
 from embedding_utils import get_available_models, get_llm_model
 from app_components.app_state import show_token_usage_panel
+
+def get_batch_size_slider(min_value=1, max_value=60, key=None):
+    """
+    Centralized function to create a consistent batch size slider.
+    
+    Args:
+        min_value: Minimum batch size
+        max_value: Maximum batch size
+        key: Optional unique key for the slider
+        
+    Returns:
+        int: Selected batch size
+    """
+    # If key is not provided, create a default one
+    slider_key = key or "batch_size_slider"
+    
+    # Create and return the slider
+    batch_size = st.slider(
+        "Batch size (files per batch)", 
+        min_value=min_value, 
+        max_value=max_value,
+        value=st.session_state.get("batch_size", 20),
+        help="Number of files to process in each batch. Lower values help avoid memory issues.",
+        key=slider_key
+    )
+    
+    # Always update session state when the value changes
+    st.session_state.batch_size = batch_size
+    
+    return batch_size
+
+def setup_memory_management():
+    """Setup memory management UI in an expander"""
+    with st.expander("Memory Management", expanded=False):
+        # Add toggle for memory monitoring with a unique key
+        memory_monitoring = st.checkbox(
+            "Enable memory monitoring", 
+            value=st.session_state.get("memory_monitoring", False),
+            help="Show current memory usage statistics",
+            key="memory_monitoring_checkbox"  # Added unique key
+        )
+        
+        # Update session state if changed
+        if memory_monitoring != st.session_state.get("memory_monitoring", False):
+            st.session_state.memory_monitoring = memory_monitoring
+            st.rerun()
+        
+        # Add memory cleanup button with unique key
+        if st.button("Force Memory Cleanup", key="force_memory_cleanup_btn"):
+            with st.spinner("Cleaning up memory..."):
+                import gc
+                gc.collect()
+                st.success("Memory cleanup complete.")
 
 def setup_sidebar(pc, pinecone_index, pinecone_index_name, repo_storage, namespace_list):
     """Setup the sidebar UI with LLM settings and token usage panel"""
@@ -54,14 +107,19 @@ def setup_sidebar(pc, pinecone_index, pinecone_index_name, repo_storage, namespa
     selected_model = st.sidebar.selectbox(
         "Select Model",
         options=available_models,
-        index=default_index
+        index=default_index,
+        key="model_selector"  # Added unique key
     )
     
     # Always update the session state with the selected model
     st.session_state.selected_model = selected_model
     
     # Add token usage toggle in sidebar
-    show_tokens = st.sidebar.checkbox("Show Token Usage", value=st.session_state.show_token_usage)
+    show_tokens = st.sidebar.checkbox(
+        "Show Token Usage", 
+        value=st.session_state.show_token_usage,
+        key="show_token_usage_checkbox"  # Added unique key
+    )
     if show_tokens != st.session_state.show_token_usage:
         st.session_state.show_token_usage = show_tokens
         st.rerun()
@@ -76,7 +134,11 @@ def setup_sidebar(pc, pinecone_index, pinecone_index_name, repo_storage, namespa
         setup_repository_selector(pc, pinecone_index, pinecone_index_name, repo_storage, namespace_list)
     
     # Navigation section
-    navigation = st.sidebar.radio("Navigation", ["Chat with Codebase", "Manage Repositories"])
+    navigation = st.sidebar.radio(
+        "Navigation", 
+        ["Chat with Codebase", "Manage Repositories"],
+        key="navigation_radio"  # Added unique key
+    )
     
     return navigation
 
@@ -94,10 +156,30 @@ def setup_repository_selector(pc, pinecone_index, pinecone_index_name, repo_stor
         key="selected_namespace"
     )
     
-    # Separate reindex button
-    reindex_button = st.sidebar.button("🔄 Reindex Repository", help="Reindex this repository with the latest code")
-    if reindex_button:
-        st.session_state.show_reindex_modal = True
+    # Create a columns layout for the two buttons to appear side by side
+    col1, col2 = st.sidebar.columns(2)
+    
+    # Add Repository button in first column
+    with col1:
+        add_repo_button = st.button(
+            "➕  Manage Repositories", 
+            help="Manage repositories",
+            key="add_repo_sidebar_btn"
+        )
+        if add_repo_button:
+            # Set flag to navigate to repository management page
+            st.session_state.navigate_to_add_repository = True
+            st.rerun()
+    
+    # Reindex button in second column
+    with col2:
+        reindex_button = st.button(
+            "🔄 Reindex", 
+            help="Reindex this repository with the latest code",
+            key="reindex_repo_btn"
+        )
+        if reindex_button:
+            st.session_state.show_reindex_modal = True
     
     # Show reindex modal if button was clicked
     if st.session_state.show_reindex_modal:
@@ -137,7 +219,8 @@ def show_repository_management(pc, pinecone_index, pinecone_index_name, repo_sto
                 )
                 
                 confirm_delete = st.checkbox(
-                    "I understand that this action is irreversible and all data in this namespace will be permanently deleted."
+                    "I understand that this action is irreversible and all data in this namespace will be permanently deleted.",
+                    key="confirm_delete_checkbox"  # Added unique key
                 )
                 
                 submit_button = st.form_submit_button("Delete Repository")
@@ -159,7 +242,7 @@ def show_repository_management(pc, pinecone_index, pinecone_index_name, repo_sto
         col1, col2 = st.columns([0.85, 0.15])
         
         with col2:
-            if st.button("🔄 Refresh"):
+            if st.button("🔄 Refresh", key="refresh_repo_list_btn"):  # Added unique key
                 st.rerun()
         
         with repo_container:

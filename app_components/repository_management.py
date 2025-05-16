@@ -1,4 +1,5 @@
-# app_components/repository_management.py
+# Full updated app_components/repository_management.py file
+
 import streamlit as st
 import time
 from token_utils import reset_token_tracking, get_token_usage
@@ -178,55 +179,61 @@ def reindex_repository(namespace, repo_url, pc, pinecone_index, pinecone_index_n
 
 def show_repository_form(pc, pinecone_index, pinecone_index_name, repo_storage):
     """Display repository addition form with file selection"""
-    repo_url = st.text_input(
-        "GitHub Repository URL", 
-        value=st.session_state.repo_url,
-        placeholder="https://github.com/username/repository",
-        help="The URL of the public GitHub repository you want to index."
-    )
+    # Import only the batch size slider
+    from app_components.ui_components import get_batch_size_slider
     
-    # Always update session state when form values change
-    st.session_state.repo_url = repo_url
+    # Initialize selected_files in session state if not exists
+    if "selected_files" not in st.session_state:
+        st.session_state.selected_files = None
     
-    # Continue only if repo URL is provided
-    if not repo_url:
-        st.warning("Please enter a GitHub repository URL to continue.")
-        return
-    
-    # Allow users to select files before adding the repository
-    namespace = st.text_input(
-        "Namespace", 
-        value=st.session_state.namespace,
-        placeholder="my-repo",
-        help="A unique identifier for this repository in your Pinecone index."
-    )
-    
-    # Always update session state when form values change
-    st.session_state.namespace = namespace
-    
-    # Add an advanced options expander
-    with st.expander("Advanced Options"):
-        st.caption("These options control how the repository is processed.")
-        # Add a slider for batch size
-        batch_size = st.slider(
-            "Batch size (files per batch)", 
-            min_value=1, 
-            max_value=20,
-            value=st.session_state.batch_size,
-            help="Number of files to process in each batch. Lower values help avoid memory issues."
+    # Use a form to capture Enter key presses
+    with st.form(key="add_repository_form"):
+        repo_url = st.text_input(
+            "GitHub Repository URL", 
+            value=st.session_state.repo_url,
+            placeholder="https://github.com/username/repository",
+            help="The URL of the public GitHub repository you want to index."
         )
-        # Store batch size in session state
-        st.session_state.batch_size = batch_size
         
-        # Add a checkbox for token tracking
-        track_tokens = st.checkbox(
-            "Track token usage", 
-            value=True,
-            help="Track and display token usage during processing."
+        # Always update session state when form values change
+        st.session_state.repo_url = repo_url
+        
+        # Allow users to select files before adding the repository
+        namespace = st.text_input(
+            "Namespace", 
+            value=st.session_state.namespace,
+            placeholder="my-repo",
+            help="A unique identifier for this repository in your Pinecone index."
         )
+        
+        # Always update session state when form values change
+        st.session_state.namespace = namespace
+        
+        # Add an advanced options expander
+        with st.expander("Advanced Options"):
+            st.caption("These options control how the repository is processed.")
+            
+            # Use the centralized batch size slider with a unique key
+            batch_size = get_batch_size_slider(key="add_repo_batch_size")
+            
+            # Add a checkbox for token tracking
+            track_tokens = st.checkbox(
+                "Track token usage", 
+                value=True,
+                help="Track and display token usage during processing.",
+                key="track_tokens_checkbox"
+            )
+        
+        # Add form submission buttons
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            scan_button = st.form_submit_button("Scan Repository Files", type="secondary")
+        with col2:
+            submit_button = st.form_submit_button("Add Repository", type="primary")
     
-    # Show file selection UI
-    if repo_url and st.button("Scan Repository Files"):
+    # Process form submission - Scan button
+    if scan_button and repo_url:
+        st.session_state.scan_triggered = True
         selected_files = show_repository_file_selection(repo_url)
         
         # Store selected files in session state
@@ -237,9 +244,21 @@ def show_repository_form(pc, pinecone_index, pinecone_index_name, repo_storage):
             st.warning("No files selected for indexing.")
             return
     
-    # Show the add repository button only when files have been selected
-    if repo_url and namespace and st.session_state.get("selected_files"):
-        if st.button("Index Repository", type="primary"):
+    # Process form submission - Add Repository button
+    if submit_button and repo_url and namespace:
+        # If files not scanned yet, scan them now
+        if not st.session_state.get("selected_files"):
+            st.info("Scanning repository files first...")
+            selected_files = show_repository_file_selection(repo_url)
+            
+            if not selected_files:
+                st.warning("No files found for indexing.")
+                return
+                
+            st.session_state.selected_files = selected_files
+        
+        # Now proceed with indexing
+        with st.spinner("Adding repository..."):
             add_repository(
                 repo_url=repo_url,
                 namespace=namespace,
@@ -248,5 +267,27 @@ def show_repository_form(pc, pinecone_index, pinecone_index_name, repo_storage):
                 pinecone_index_name=pinecone_index_name,
                 repo_storage=repo_storage,
                 batch_size=batch_size,
+                selected_files=st.session_state.selected_files
+            )
+    
+    # Display selected files if they exist
+    if st.session_state.get("selected_files"):
+        st.success(f"{len(st.session_state.selected_files)} files selected for indexing.")
+        with st.expander("View selected files"):
+            for i, file in enumerate(st.session_state.selected_files[:20]):
+                st.write(f"{i+1}. {file}")
+            if len(st.session_state.selected_files) > 20:
+                st.write(f"... and {len(st.session_state.selected_files) - 20} more files")
+        
+        # Show the standalone Add Repository button if files are already selected
+        if st.button("Index Repository Now", type="primary", key="index_selected_files_btn"):
+            add_repository(
+                repo_url=repo_url,
+                namespace=namespace,
+                pc=pc,
+                pinecone_index=pinecone_index,
+                pinecone_index_name=pinecone_index_name,
+                repo_storage=repo_storage,
+                batch_size=batch_size, 
                 selected_files=st.session_state.selected_files
             )

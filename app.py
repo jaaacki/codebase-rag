@@ -1,4 +1,4 @@
-# app.py
+# app.py with Add Repository button
 import streamlit as st
 import time
 import os
@@ -11,7 +11,7 @@ from export_utils import export_chat_message
 from repository_storage import RepositoryStorage
 from app_components.app_state import initialize_session_state
 from app_components.chat_interface import chat_interface, show_export_modal
-from app_components.ui_components import setup_sidebar, show_repository_management
+from app_components.ui_components import setup_sidebar, show_repository_management, get_batch_size_slider
 from memory_utils import log_memory_usage, force_garbage_collection, add_memory_monitor_settings, monitor_memory_usage
 
 def main():
@@ -20,6 +20,10 @@ def main():
     
     # Initialize all session state variables
     initialize_session_state()
+    
+    # Set up navigation flag if it doesn't exist
+    if "navigate_to_add_repository" not in st.session_state:
+        st.session_state.navigate_to_add_repository = False
     
     # Monitor memory usage
     memory_metrics = st.sidebar.empty()
@@ -80,6 +84,12 @@ def main():
     # Setup sidebar and get the navigation selection
     navigation = setup_sidebar(pc, pinecone_index, pinecone_index_name, repo_storage, namespace_list)
     
+    # Check if we need to navigate to repository management due to Add Repository button
+    if st.session_state.get("navigate_to_add_repository", False):
+        navigation = "Manage Repositories"
+        # Reset the flag
+        st.session_state.navigate_to_add_repository = False
+    
     # Get the selected namespace from session state
     selected_namespace = st.session_state.get("selected_namespace", namespace_list[0])
     
@@ -121,14 +131,8 @@ def show_reindex_modal(selected_namespace, pc, pinecone_index, pinecone_index_na
             help="Enter the GitHub URL of the repository to reindex with latest code"
         )
         
-        # Add batch size selection
-        batch_size = st.slider(
-            "Batch size (files per batch)", 
-            min_value=1, 
-            max_value=20,
-            value=st.session_state.batch_size,
-            help="Lower values help avoid memory issues for large repos."
-        )
+        # Use the centralized batch size slider with a unique key
+        batch_size = get_batch_size_slider(key="reindex_batch_size")
         
         confirm = st.checkbox("I understand this will replace the existing data", key="confirm_reindex_checkbox")
         
@@ -147,4 +151,4 @@ def show_reindex_modal(selected_namespace, pc, pinecone_index, pinecone_index_na
                 st.rerun()
 
 if __name__ == "__main__":
-    main() 
+    main()
