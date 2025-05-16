@@ -1,4 +1,4 @@
-# Updated embedding_utils.py with token tracking
+# embedding_utils.py with Qdrant support
 from sentence_transformers import SentenceTransformer
 from openai import OpenAI
 import streamlit as st
@@ -190,8 +190,8 @@ def summarize_context(contexts, max_tokens=30000):
     
     return result
 
-def perform_rag(query, client, pinecone_index, selected_namespace, llm_provider=None, selected_model=None):
-    """Perform RAG query and get response from LLM with token tracking"""
+def perform_rag(query, client, qdrant_client, collection_name, llm_provider=None, selected_model=None):
+    """Perform RAG query and get response from LLM with token tracking using Qdrant"""
     try:
         # Get LLM provider from session state or secrets
         llm_provider = llm_provider or st.session_state.get("llm_provider", st.secrets.get("LLM_PROVIDER", "groq"))
@@ -199,31 +199,35 @@ def perform_rag(query, client, pinecone_index, selected_namespace, llm_provider=
         # Track token usage for query
         track_token_usage(query, purpose="chat_input", precise=True)
         
-        # Get embeddings dynamically based on configuration
-        raw_query_embedding = get_embeddings(query)
+        # Get embeddings for query
+        query_embedding = get_embeddings(query)
 
-        # Query Pinecone for relevant code
-        top_matches = pinecone_index.query(
-            vector=raw_query_embedding, 
-            top_k=5,  # Reduced from 10 to 5 to help with token limits
-            include_metadata=True,
-            namespace=selected_namespace
+        # Query Qdrant for relevant code
+        from qdrant_client.models import Distance, VectorParams, PointStruct
+        
+        # Get top matches from Qdrant
+        search_result = qdrant_client.search(
+            collection_name=collection_name,
+            query_vector=query_embedding,
+            limit=5,  # Reduced from 10 to 5 to help with token limits
         )
 
         # Enhanced context building with metadata
         contexts = []
-        for item in top_matches['matches']:
-            metadata = item['metadata']
+        for result in search_result:
+            metadata = result.payload
             context_header = f"File: {metadata.get('filepath', 'Unknown')}"
-            if 'type' in metadata:
-                context_header += f"\n{metadata['type']}: {metadata['name']} (Line {metadata['line_number']})"
+            if 'chunk_index' in metadata:
+                context_header += f" (Chunk {metadata['chunk_index']})"
+            
+            # Get the content
+            content = metadata.get('page_content', '')
             
             # Limit the size of each code snippet to reduce tokens
-            code_text = metadata['text']
-            if len(code_text) > 5000:  # Arbitrary limit per snippet
-                code_text = code_text[:5000] + "... [truncated]"
+            if len(content) > 5000:  # Arbitrary limit per snippet
+                content = content[:5000] + "... [truncated]"
                 
-            contexts.append(f"{context_header}\n```\n{code_text}\n```")
+            contexts.append(f"{context_header}\n```\n{content}\n```")
         
         # Summarize context if it's too large
         contexts = summarize_context(contexts)

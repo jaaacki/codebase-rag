@@ -1,12 +1,12 @@
-# app.py with Add Repository button
+# app.py with direct Qdrant integration
 import streamlit as st
 import time
 import traceback
 import os
 import gc
 from openai import OpenAI
-from pinecone_utils import initialize_pinecone, get_namespaces, delete_namespace
-from github_utils import index_github_repo
+from qdrant_client import QdrantClient
+from github_utils import index_github_repo, QDRANT_URL
 from embedding_utils import perform_rag, create_llm_client, get_llm_model, get_available_models
 from export_utils import export_chat_message
 from repository_storage import RepositoryStorage
@@ -14,6 +14,24 @@ from app_components.app_state import initialize_session_state
 from app_components.chat_interface import chat_interface, show_export_modal
 from app_components.ui_components import setup_sidebar, show_repository_management, get_batch_size_slider
 from memory_utils import log_memory_usage, force_garbage_collection, add_memory_monitor_settings, monitor_memory_usage
+
+# Simple functions to replace Pinecone utils
+def get_namespaces(qdrant_client):
+    """Get list of collections from Qdrant"""
+    try:
+        collections = qdrant_client.get_collections().collections
+        return [collection.name for collection in collections]
+    except Exception as e:
+        st.error(f"Error getting collections from Qdrant: {str(e)}")
+        return []
+
+def delete_namespace(qdrant_client, collection_name):
+    """Delete a collection from Qdrant"""
+    try:
+        qdrant_client.delete_collection(collection_name=collection_name)
+        return True, f"Successfully deleted collection '{collection_name}'."
+    except Exception as e:
+        return False, f"Error deleting collection: {str(e)}"
 
 def main():
     st.title("Codebase RAG")
@@ -33,46 +51,58 @@ def main():
         st.session_state.repository_added = False
         st.session_state.repository_deleted = False
 
-    pinecone_api_key = st.secrets["PINECONE_API_KEY"]
-    pinecone_index_name = st.secrets.get("PINECONE_INDEX_NAME", "codebase-rag")
-    add_memory_monitor_settings()
-    pc, pinecone_index = initialize_pinecone(pinecone_api_key, pinecone_index_name)
-    st.session_state.index_initialization_complete = True
+    # Initialize Qdrant client directly
+    try:
+        qdrant_url = os.environ.get("QDRANT_URL", QDRANT_URL)
+        qdrant_client = QdrantClient(url=qdrant_url)
+        st.session_state.index_initialization_complete = True
+    except Exception as e:
+        st.error(f"Error connecting to Qdrant: {str(e)}")
+        st.stop()
 
-    namespace_list = get_namespaces(pinecone_index)
+    # Get collections (namespaces) from Qdrant
+    namespace_list = get_namespaces(qdrant_client)
     repo_storage.import_from_session_state()
 
     if not namespace_list:
-        st.warning("No namespaces found in your Pinecone index. You need to add data to the index first.")
+        st.warning("No collections found in your Qdrant database. You need to add data to a collection first.")
         st.subheader("Add a GitHub Repository")
         st.markdown("Index a public GitHub repository to start using the RAG system.")
-        show_repository_management(pc, pinecone_index, pinecone_index_name, repo_storage, namespace_list)
+        show_repository_management(qdrant_client, None, None, repo_storage, namespace_list)
         log_memory_usage(memory_metrics)
         st.stop()
 
-    navigation = setup_sidebar(pc, pinecone_index, pinecone_index_name, repo_storage, namespace_list)
+    add_memory_monitor_settings()
+    
+    # Set up sidebar with Qdrant client instead of Pinecone
+    navigation = setup_sidebar(qdrant_client, None, None, repo_storage, namespace_list)
 
     if st.session_state.get("navigate_to_add_repository", False):
         navigation = "Manage Repositories"
         st.session_state.navigate_to_add_repository = False
 
-    selected_namespace = st.session_state.get("selected_namespace", namespace_list[0])
+    selected_namespace = st.session_state.get("selected_namespace", namespace_list[0] if namespace_list else None)
 
     if st.session_state.show_reindex_modal:
-        show_reindex_modal(selected_namespace, pc, pinecone_index, pinecone_index_name, repo_storage)
+        show_reindex_modal(selected_namespace, qdrant_client, None, None, repo_storage)
 
     if st.session_state.show_export_modal and st.session_state.export_message_id is not None:
         show_export_modal(st.session_state.export_message_id)
 
     if navigation == "Manage Repositories":
-        show_repository_management(pc, pinecone_index, pinecone_index_name, repo_storage, namespace_list)
+        show_repository_management(qdrant_client, None, None, repo_storage, namespace_list)
         st.stop()
 
-    st.caption(f"Currently browsing: {selected_namespace} | Using: {st.session_state.llm_provider.upper()} ({st.session_state.selected_model})")
-    chat_interface(pinecone_index, selected_namespace)
+    if selected_namespace:
+        st.caption(f"Currently browsing: {selected_namespace} | Using: {st.session_state.llm_provider.upper()} ({st.session_state.selected_model})")
+        # Use the Qdrant client for chat_interface
+        chat_interface(qdrant_client, selected_namespace)
+    else:
+        st.warning("No namespace selected. Please add a repository first.")
+    
     log_memory_usage(memory_metrics)
 
-def show_reindex_modal(selected_namespace, pc, pinecone_index, pinecone_index_name, repo_storage):
+def show_reindex_modal(selected_namespace, qdrant_client, _, __, repo_storage):
     from app_components.repository_management import reindex_repository
     with st.container():
         st.subheader("Reindex Repository")
@@ -84,7 +114,7 @@ def show_reindex_modal(selected_namespace, pc, pinecone_index, pinecone_index_na
         col1, col2 = st.columns(2)
         with col1:
             if st.button("Confirm", key="confirm_reindex_btn", type="primary") and confirm and repo_url:
-                reindex_repository(selected_namespace, repo_url, pc, pinecone_index, pinecone_index_name, repo_storage, batch_size)
+                reindex_repository(selected_namespace, repo_url, qdrant_client, None, None, repo_storage, batch_size)
         with col2:
             if st.button("Cancel", key="cancel_reindex_btn"):
                 st.session_state.show_reindex_modal = False

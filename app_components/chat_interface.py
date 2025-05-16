@@ -87,8 +87,8 @@ def show_export_modal(message_id):
             st.session_state.export_message_id = None
             st.rerun()
 
-def chat_interface(pinecone_index, selected_namespace):
-    """Display and handle the chat interface"""
+def chat_interface(qdrant_client, collection_name):
+    """Display and handle the chat interface using Qdrant instead of Pinecone"""
     # Display chat messages from history on app rerun with export buttons
     for i, message in enumerate(st.session_state.messages):
         render_message_with_export(message, i)
@@ -109,8 +109,8 @@ def chat_interface(pinecone_index, selected_namespace):
                     response = perform_rag(
                         prompt, 
                         None,  # We'll create the client inside perform_rag
-                        pinecone_index, 
-                        selected_namespace,
+                        qdrant_client,  # Pass Qdrant client instead of Pinecone
+                        collection_name,  # Use collection_name instead of namespace
                         llm_provider=st.session_state.llm_provider,
                         selected_model=st.session_state.selected_model
                     )
