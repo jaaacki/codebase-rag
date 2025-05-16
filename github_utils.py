@@ -302,7 +302,16 @@ def index_github_repo(repo_url, namespace, pinecone_client, pinecone_index, inde
         return False, f"Error indexing repository: {str(e)}"
 
 def show_repository_file_selection(repo_url, max_files=200):
-    """Show UI for selecting files from a repository"""
+    """
+    THIS FUNCTION IS DEPRECATED - Use the version in repository_management.py instead
+    
+    This function has critical issues because it uses a temporary directory that gets
+    deleted before the UI can interact with it. In a Streamlit app, the temp directory
+    is deleted after the function returns, but before the user interacts with the UI.
+    
+    The proper approach is to split the clone and UI steps with session state in between.
+    See the implementation in repository_management.py for the corrected version.
+    """
     try:
         # Clone the repository first to scan its files
         with st.spinner("Cloning repository to scan files..."):
@@ -315,105 +324,13 @@ def show_repository_file_selection(repo_url, max_files=200):
                 # Scan for files
                 file_list = scan_repository_files(repo_path)
                 
-                # Group files by extension for better organization
-                files_by_ext = {}
-                for file in file_list:
-                    ext = file["ext"]
-                    if ext not in files_by_ext:
-                        files_by_ext[ext] = []
-                    files_by_ext[ext].append(file)
+                # Store file list in session state for persistence
+                st.session_state.repo_file_list = file_list
+                
+                # Return file list - but note this won't be useful for UI interaction
+                # because the temp directory will be gone
+                return [file["path"] for file in file_list]
         
-        # Display file selection UI
-        st.subheader("Select Files to Index")
-        
-        # Options for file selection method
-        selection_method = st.radio(
-            "File Selection Method",
-            options=["Select by extension", "Select individual files", "Limit by file size", "Select all files"],
-            index=0,
-            help="Choose how you want to select files for indexing"
-        )
-        
-        selected_files = []
-        
-        if selection_method == "Select by extension":
-            # Show extension options with counts
-            extensions = list(files_by_ext.keys())
-            extension_counts = {ext: len(files_by_ext[ext]) for ext in extensions}
-            extension_options = [f"{ext} ({extension_counts[ext]} files)" for ext in extensions]
-            
-            selected_extensions = st.multiselect(
-                "Select file extensions to include",
-                options=extension_options,
-                default=extension_options,
-                help="Only files with these extensions will be indexed"
-            )
-            
-            # Convert back to actual extensions
-            selected_exts = [ext.split()[0] for ext in selected_extensions]
-            
-            # Collect files with selected extensions
-            for ext in selected_exts:
-                selected_files.extend([file["path"] for file in files_by_ext[ext]])
-            
-        elif selection_method == "Select individual files":
-            # Show a list of files with checkboxes, grouped by extension
-            st.write("Select individual files to include:")
-            
-            # Add a filter for easier searching
-            file_filter = st.text_input("Filter files by name", "")
-            
-            for ext in sorted(files_by_ext.keys()):
-                with st.expander(f"{ext} files ({len(files_by_ext[ext])})"):
-                    # Filter files based on user input
-                    filtered_files = [f for f in files_by_ext[ext] if file_filter.lower() in f["path"].lower()]
-                    
-                    # Display warning if too many files
-                    if len(filtered_files) > 100:
-                        st.warning(f"Showing only the first 100 of {len(filtered_files)} files. Use the filter to narrow down.")
-                        filtered_files = filtered_files[:100]
-                    
-                    for file in filtered_files:
-                        if st.checkbox(f"{file['path']} ({file['size_kb']} KB)", key=f"file_{file['path']}"):
-                            selected_files.append(file["path"])
-            
-        elif selection_method == "Limit by file size":
-            # Show a slider for size limit
-            max_size_kb = st.slider(
-                "Maximum file size (KB)",
-                min_value=1,
-                max_value=1000,
-                value=100,
-                help="Only files smaller than this size will be indexed"
-            )
-            
-            # Select files under the size limit
-            for ext in files_by_ext:
-                for file in files_by_ext[ext]:
-                    if file["size_kb"] <= max_size_kb:
-                        selected_files.append(file["path"])
-            
-        else:  # Select all files
-            for ext in files_by_ext:
-                selected_files.extend([file["path"] for file in files_by_ext[ext]])
-            
-            # Warn if there are too many files
-            if len(selected_files) > max_files:
-                st.warning(f"Selected {len(selected_files)} files. Processing too many files may cause memory issues.")
-        
-        # Show summary
-        st.write(f"Selected {len(selected_files)} files for indexing")
-        
-        # Show a sample of selected files
-        if selected_files:
-            with st.expander("Preview selected files"):
-                for i, path in enumerate(selected_files[:20]):
-                    st.write(f"- {path}")
-                if len(selected_files) > 20:
-                    st.write(f"... and {len(selected_files) - 20} more")
-        
-        return selected_files
-    
     except Exception as e:
         st.error(f"Error scanning repository: {str(e)}")
         return None
