@@ -6,30 +6,37 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     build-essential \
     git \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    # for our little shell parser
+    sed \
+    awk \
+  && apt-get clean \
+  && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first to leverage Docker cache
+# Copy your .env into the image
+COPY .env .
+
+# Create the .streamlit folder and convert .env -> secrets.toml
+RUN mkdir -p /app/.streamlit \
+ && awk -F= '/^[A-Za-z_][A-Za-z0-9_]*=/ { \
+      key=$1; val=$2; \
+      # strip surrounding quotes/spaces
+      gsub(/^["'\'']|["'\'']$/,"",val); \
+      print key " = \"" val "\"" \
+    }' .env > /app/.streamlit/secrets.toml
+
+# Copy requirements and install Python deps
 COPY requirements.txt .
-
-# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the application code
+# Copy the rest of your app
 COPY . .
 
-# Set environment variables
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
-# Make start.sh executable
-RUN chmod +x /app/start.sh
+RUN chmod +x /app/start.sh \
+ && sed -i 's/streamlit_app.py/app.py/g' /app/start.sh
 
-# Update start.sh to use app.py instead of streamlit_app.py
-RUN sed -i 's/streamlit_app.py/app.py/g' /app/start.sh
-
-# Expose the port Streamlit runs on
 EXPOSE 8501
 
-# Command to run the application
 CMD ["/app/start.sh"]
