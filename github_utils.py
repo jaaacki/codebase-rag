@@ -1,3 +1,4 @@
+# github_utils.py with Qdrant support
 import os
 import streamlit as st
 import tempfile
@@ -115,13 +116,23 @@ def chunk_text(text, max_chars=30000):
     return chunks
 
 
-def index_github_repo(repo_url, namespace, pinecone_client, pinecone_index, index_name="codebase-rag", batch_size=5, max_files=None, selected_files=None):
+def index_github_repo(repo_url, namespace, qdrant_client=None, pinecone_index=None, index_name="codebase-rag", batch_size=5, max_files=None, selected_files=None):
     """
     Index a GitHub repo into Qdrant via LangChain
+    Now accepts qdrant_client parameter (first priority) or pinecone_index (backwards compatibility)
     """
     try:
         if "repository_added" not in st.session_state:
             st.session_state.repository_added = False
+
+        # If no qdrant_client is provided but we have a pinecone_index that's actually a Qdrant client
+        if qdrant_client is None and isinstance(pinecone_index, object) and hasattr(pinecone_index, 'get_collections'):
+            qdrant_client = pinecone_index
+            
+        # Make sure we have a Qdrant client
+        if qdrant_client is None:
+            from qdrant_client import QdrantClient
+            qdrant_client = QdrantClient(url=QDRANT_URL)
 
         col1, _ = st.columns([1, 0.01])
         with col1:
@@ -179,13 +190,30 @@ def index_github_repo(repo_url, namespace, pinecone_client, pinecone_index, inde
                 progress_text.text("Step 5/5: Uploading to Qdrant...")
                 progress_bar.progress(0.8)
                 log_mem()
-                Qdrant.from_documents(
-                    documents=docs,
-                    embedding=embed,
-                    url=QDRANT_URL,
-                    prefer_grpc=False,
-                    collection_name=namespace
-                )
+                try:
+                    # Try to create the collection first - silently ignore if it exists
+                    try:
+                        from qdrant_client.models import VectorParams, Distance
+                        qdrant_client.create_collection(
+                            collection_name=namespace,
+                            vectors_config=VectorParams(size=embed.dimensions, distance=Distance.COSINE)
+                        )
+                    except Exception as e:
+                        # Ignore errors if collection already exists
+                        if "already exists" not in str(e):
+                            st.warning(f"Note: {str(e)}")
+                    
+                    Qdrant.from_documents(
+                        documents=docs,
+                        embedding=embed,
+                        url=QDRANT_URL,
+                        prefer_grpc=False,
+                        collection_name=namespace
+                    )
+                except Exception as e:
+                    st.error(f"Error uploading to Qdrant: {str(e)}")
+                    return False, f"Error indexing: {str(e)}"
+                    
                 progress_bar.progress(1.0)
                 log_mem()
 

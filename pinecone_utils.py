@@ -1,122 +1,40 @@
-# pinecone_utils.py
+# pinecone_utils.py - Compatibility version for Qdrant
 import streamlit as st
 import time
-from pinecone import Pinecone as PineconeClient, ServerlessSpec
 
-# Use cache_resource instead of cache_data for non-serializable objects like Pinecone clients
-@st.cache_resource(ttl=3600, show_spinner=False)
+# This wrapper provides Pinecone-like methods but uses Qdrant
 def initialize_pinecone(api_key, index_name="codebase-rag"):
-    """Initialize Pinecone client and ensure index exists with correct dimensions"""
-    pc = PineconeClient(api_key=api_key)
+    """Compatibility function that now initializes Qdrant instead of Pinecone"""
+    import os
+    from qdrant_client import QdrantClient
+    from github_utils import QDRANT_URL
     
-    # Get dimension from secrets based on model
-    embedding_model = st.secrets.get("EMBEDDING_MODEL", "text-embedding-3-large")
-    if embedding_model == "text-embedding-3-large":
-        dimension = 3072
-    else:
-        dimension = 768  # Default for most HuggingFace models like all-mpnet-base-v2
-    
-    # Override with explicit dimension if provided
-    dimension = int(st.secrets.get("EMBEDDING_DIMENSION", dimension))
-    
-    # Create a unique session state key for this index
-    index_state_key = f"index_checked_{index_name}"
-    if index_state_key not in st.session_state:
-        st.session_state[index_state_key] = False
-    
-    # Only show messages if we haven't checked this index before
-    should_show_messages = not st.session_state[index_state_key]
+    st.warning("Using Qdrant instead of Pinecone. This compatibility layer will be removed in the future.")
     
     try:
-        # Check if index exists
-        indices = pc.list_indexes()
-        
-        # Check if index exists with wrong dimension
-        if index_name in indices:
-            try:
-                # Get index description to check dimensions
-                index_description = pc.describe_index(index_name)
-                current_dimension = index_description.dimension
-                
-                if current_dimension != dimension and should_show_messages:
-                    st.warning(f"Index '{index_name}' exists with dimension {current_dimension}, but your configuration requires {dimension} dimensions.")
-                    st.warning(f"Please update your EMBEDDING_MODEL and EMBEDDING_DIMENSION settings to match the index, or create a new index with the correct dimensions.")
-                    st.info(f"Current settings: EMBEDDING_MODEL={embedding_model}, EMBEDDING_DIMENSION={dimension}")
-            except Exception as e:
-                if should_show_messages:
-                    st.error(f"Error checking index dimensions: {str(e)}")
-        else:
-            # Index doesn't exist, create it
-            if should_show_messages:
-                st.warning(f"Index '{index_name}' does not exist. Creating it now...")
-            try:
-                pc.create_index(
-                    name=index_name,
-                    dimension=dimension,
-                    metric="cosine",
-                    spec=ServerlessSpec(
-                        cloud="aws",
-                        region="us-east-1"
-                    )
-                )
-                if should_show_messages:
-                    st.success(f"Created index '{index_name}' with dimension {dimension}")
-                time.sleep(5)  # Wait for index to be ready
-            except Exception as e:
-                if "ALREADY_EXISTS" in str(e):
-                    if should_show_messages:
-                        st.info(f"Index '{index_name}' already exists.")
-                else:
-                    if should_show_messages:
-                        st.error(f"Error creating index: {str(e)}")
+        qdrant_url = os.environ.get("QDRANT_URL", QDRANT_URL)
+        qdrant_client = QdrantClient(url=qdrant_url)
+        # Return dummy Pinecone client and the real Qdrant client as the "index"
+        return None, qdrant_client
     except Exception as e:
-        if should_show_messages:
-            st.error(f"Error checking indexes: {str(e)}")
-    
-    # Mark as checked to prevent repeated messages
-    st.session_state[index_state_key] = True
-    
-    # Connect to index
-    index = pc.Index(index_name)
-    return pc, index
+        st.error(f"Error connecting to Qdrant: {str(e)}")
+        return None, None
 
-# No caching for namespace list to ensure it's always fresh
-def get_namespaces(index):
-    """Get list of namespaces from Pinecone index"""
+def get_namespaces(qdrant_client):
+    """Get list of collections from Qdrant (replacing Pinecone namespaces)"""
     try:
-        # Get index stats and extract namespaces
-        stats = index.describe_index_stats()
-        namespace_list = sorted(list(stats['namespaces'].keys()))
-        return namespace_list
+        if qdrant_client is None:
+            return []
+        collections = qdrant_client.get_collections().collections
+        return [collection.name for collection in collections]
     except Exception as e:
-        st.error(f"Error getting namespaces: {str(e)}")
+        st.error(f"Error getting collections from Qdrant: {str(e)}")
         return []
 
-def delete_namespace(index, namespace):
-    """Delete a namespace from Pinecone index"""
+def delete_namespace(qdrant_client, collection_name):
+    """Delete a collection from Qdrant (replacing Pinecone namespace)"""
     try:
-        # Check if namespace exists
-        stats = index.describe_index_stats()
-        namespace_list = list(stats['namespaces'].keys())
-        
-        if namespace in namespace_list:
-            # Delete all vectors in the namespace
-            index.delete(namespace=namespace, delete_all=True)
-            
-            # Small delay to ensure the operation completes
-            time.sleep(2)
-            
-            # Verify deletion
-            stats_after = index.describe_index_stats()
-            if namespace not in stats_after['namespaces']:
-                return True, f"Successfully deleted namespace '{namespace}' from the index."
-            else:
-                vector_count = stats_after['namespaces'].get(namespace, {}).get('vector_count', 0)
-                if vector_count == 0:
-                    return True, f"Successfully deleted all vectors from namespace '{namespace}'."
-                else:
-                    return False, f"Namespace '{namespace}' still contains {vector_count} vectors after deletion attempt."
-        else:
-            return False, f"Namespace '{namespace}' not found in the index."
+        qdrant_client.delete_collection(collection_name=collection_name)
+        return True, f"Successfully deleted collection '{collection_name}'."
     except Exception as e:
-        return False, f"Error deleting namespace: {str(e)}"
+        return False, f"Error deleting collection: {str(e)}"

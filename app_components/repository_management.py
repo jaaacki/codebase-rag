@@ -1,3 +1,4 @@
+# app_components/repository_management.py - Updated for Qdrant
 import streamlit as st
 import os
 import tempfile
@@ -6,10 +7,29 @@ import pandas as pd
 from git import Repo
 from token_utils import reset_token_tracking, get_token_usage
 from chunk_utils import smart_code_chunking
-from pinecone_utils import delete_namespace, get_namespaces
 from github_utils import index_github_repo
 from st_aggrid import AgGrid, GridOptionsBuilder
 from repository_storage import RepositoryStorage
+
+# --- Custom Qdrant functions ---
+def get_namespaces(qdrant_client):
+    """Get list of collections from Qdrant"""
+    try:
+        if qdrant_client is None:
+            return []
+        collections = qdrant_client.get_collections().collections
+        return [collection.name for collection in collections]
+    except Exception as e:
+        st.error(f"Error getting collections from Qdrant: {str(e)}")
+        return []
+
+def delete_namespace(qdrant_client, collection_name):
+    """Delete a collection from Qdrant"""
+    try:
+        qdrant_client.delete_collection(collection_name=collection_name)
+        return True, f"Successfully deleted collection '{collection_name}'."
+    except Exception as e:
+        return False, f"Error deleting collection: {str(e)}"
 
 # --- Utility: hierarchical repository scan ---
 def scan_repository(repo_path):
@@ -38,9 +58,9 @@ def scan_repository(repo_path):
     return file_list, sorted(folder_set)
 
 # --- Delete Repository Helper ---
-def delete_repository(namespace_to_delete, pinecone_index, repo_storage):
+def delete_repository(namespace_to_delete, qdrant_client, repo_storage):
     """Delete a repository namespace"""
-    success, msg = delete_namespace(pinecone_index, namespace_to_delete)
+    success, msg = delete_namespace(qdrant_client, namespace_to_delete)
     if success:
         repo_storage.delete_repository(namespace_to_delete)
         st.session_state.repository_deleted = True
@@ -49,10 +69,10 @@ def delete_repository(namespace_to_delete, pinecone_index, repo_storage):
     return success, msg
 
 # --- Reindex Repository Helper ---
-def reindex_repository(namespace, repo_url, pc, pinecone_index, pinecone_index_name, repo_storage, batch_size=10, selected_files=None):
+def reindex_repository(namespace, repo_url, qdrant_client, _, __, repo_storage, batch_size=10, selected_files=None):
     """Delete and re-index a repository namespace"""
     # Delete existing namespace
-    success_del, msg_del = delete_namespace(pinecone_index, namespace)
+    success_del, msg_del = delete_namespace(qdrant_client, namespace)
     if not success_del:
         return False, f"Error deleting namespace: {msg_del}"
     # Reset token tracking
@@ -63,9 +83,9 @@ def reindex_repository(namespace, repo_url, pc, pinecone_index, pinecone_index_n
     success_idx, msg_idx = index_github_repo(
         repo_url=repo_url,
         namespace=namespace,
-        pinecone_client=pc,
-        pinecone_index=pinecone_index,
-        index_name=pinecone_index_name,
+        qdrant_client=qdrant_client,
+        pinecone_index=None,  # Not needed
+        index_name=None,  # Not needed for Qdrant
         batch_size=batch_size,
         selected_files=selected_files
     )
@@ -75,8 +95,38 @@ def reindex_repository(namespace, repo_url, pc, pinecone_index, pinecone_index_n
         st.session_state.refresh_message = f"Repository '{namespace}' reindexed successfully. Tokens used: {get_token_usage('indexing'):,}"
     return success_idx, msg_idx
 
+# --- Simple Add Repository ---
+def add_repository_simple(repo_url, namespace, qdrant_client, _, __, repo_storage, batch_size=10, selected_files=None):
+    """Add a repository to Qdrant"""
+    if not repo_url or not namespace:
+        return False, "Repository URL and namespace are required"
+    
+    # Reset token tracking
+    reset_token_tracking('indexing')
+    
+    # Store URL
+    repo_storage.store_repository(namespace, repo_url)
+    
+    # Perform indexing
+    success, msg = index_github_repo(
+        repo_url=repo_url,
+        namespace=namespace,
+        qdrant_client=qdrant_client,
+        pinecone_index=None,  # Not needed
+        index_name=None,  # Not needed for Qdrant
+        batch_size=batch_size,
+        selected_files=selected_files
+    )
+    
+    if success:
+        st.session_state.repository_added = True
+        st.session_state.refresh_required = True
+        st.session_state.refresh_message = f"Repository '{namespace}' indexed successfully. Tokens used: {get_token_usage('indexing'):,}"
+    
+    return success, msg
+
 # --- Core Repository Management UI ---
-def show_repository_management(pc, pinecone_index, pinecone_index_name, repo_storage, namespace_list):
+def show_repository_management(qdrant_client, _, __, repo_storage, namespace_list):
     st.subheader("Manage GitHub Repositories")
     tabs = st.tabs(["Scan & Index", "Delete Repository"])
 
@@ -114,8 +164,9 @@ def show_repository_management(pc, pinecone_index, pinecone_index_name, repo_sto
                         st.session_state.repo_path = path
 
                     with st.spinner("Scanning files…"):
-                        files, _ = scan_repository(path)
+                        files, folders = scan_repository(path)
                         st.session_state.file_list = files
+                        st.session_state.folder_list = folders
 
                     st.session_state.scanned = True
                     st.success(f"Scanned {len(st.session_state.file_list)} files.")
@@ -171,9 +222,9 @@ def show_repository_management(pc, pinecone_index, pinecone_index_name, repo_sto
                         success, msg = index_github_repo(
                             repo_url=st.session_state.scan_url,
                             namespace=ns,
-                            pinecone_client=pc,
-                            pinecone_index=pinecone_index,
-                            index_name=pinecone_index_name,
+                            qdrant_client=qdrant_client,
+                            pinecone_index=None,  # Not needed
+                            index_name=None,  # Not needed for Qdrant
                             batch_size=bs,
                             selected_files=selected
                         )
@@ -190,22 +241,27 @@ def show_repository_management(pc, pinecone_index, pinecone_index_name, repo_sto
     # --- Delete Repository Tab ---
     with tabs[1]:
         st.markdown("### Delete a Namespace")
-        ns_list = get_namespaces(pinecone_index)
+        ns_list = get_namespaces(qdrant_client)
         if not ns_list:
             st.info("No namespaces available.")
         else:
             st.warning("⚠️ This will permanently delete all vectors in that namespace.")
             to_del = st.selectbox("Namespace", ns_list, key="del_ns")
             if st.button("Delete Repository", key="del_repo"):
-                ok, msg = delete_namespace(pinecone_index, to_del)
+                ok, msg = delete_namespace(qdrant_client, to_del)
                 if ok:
                     repo_storage.delete_repository(to_del)
-                    st.success(f"Deleted namespace “{to_del}”.")
+                    # Fixed the syntax error by using single quotes correctly
+                    st.success(f"Deleted namespace '{to_del}'.")
                 else:
                     st.error(msg)
 
     # --- Show Existing Namespaces ---
     st.subheader("Existing Namespaces")
-    for ns in get_namespaces(pinecone_index):
-        url = repo_storage.get_repository_url(ns) or ""
-        st.write(f"- **{ns}** → {url}")
+    ns_list = get_namespaces(qdrant_client)
+    if not ns_list:
+        st.info("No namespaces found yet. Add a repository to create namespaces.")
+    else:
+        for ns in ns_list:
+            url = repo_storage.get_repository_url(ns) or ""
+            st.write(f"- **{ns}** → {url}")
