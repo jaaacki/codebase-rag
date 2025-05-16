@@ -147,4 +147,4 @@ def show_reindex_modal(selected_namespace, pc, pinecone_index, pinecone_index_na
                 st.rerun()
 
 if __name__ == "__main__":
-    main()
+    main() 
